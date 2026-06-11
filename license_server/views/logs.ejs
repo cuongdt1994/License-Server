@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logs — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body    { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border);
+              padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
+                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
+    .nav-btns a:hover      { background: var(--border); color: #fff; }
+    .nav-btns a.active     { background: var(--primary); color: #fff; }
+    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
+    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
+    .page   { padding: 24px; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .page-header h5 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+    .badge-refresh { background: #1f2937; border: 1px solid var(--border); color: var(--muted);
+                     padding: 4px 12px; border-radius: 999px; font-size: .78rem; }
+    .badge-refresh span { color: #fbbf24; font-weight: 700; }
+    .log-box { background: #0d1117; border: 1px solid var(--border); border-radius: 12px;
+               padding: 20px; max-height: calc(100vh - 160px); overflow-y: auto;
+               font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .82rem; line-height: 1.8; }
+    .log-box::-webkit-scrollbar       { width: 6px; }
+    .log-box::-webkit-scrollbar-track { background: #161b22; }
+    .log-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .log-line       { display: block; padding: 1px 0; }
+    .log-line.info  { color: #6ee7b7; }
+    .log-line.warn  { color: #fbbf24; }
+    .log-line.error { color: #f87171; }
+    /* Tô sáng phần timestamp */
+    .log-line .ts   { color: #6b7280; margin-right: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand">
+    <i class="bi bi-shield-lock-fill"></i>License Manager
+  </div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/bans">IP Bans</a>
+    <a href="/history">History</a>
+    <a href="/logs" class="active">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-header">
+    <h5><i class="bi bi-terminal me-2" style="color:var(--primary)"></i>Server Logs</h5>
+    <div class="badge-refresh">
+      80 dòng gần nhất &nbsp;·&nbsp; refresh sau <span id="cd">15</span>s
+    </div>
+  </div>
+
+  <div class="log-box" id="logbox">
+    <% lines.forEach(function(line) {
+         var cls = 'info';
+         if (line.includes('WARNING')) cls = 'warn';
+         if (line.includes('ERROR'))   cls = 'error';
+         // Tách timestamp ra để tô màu khác
+         var ts  = line.slice(0, 19);
+         var rest = line.slice(19);
+    %>
+    <span class="log-line <%= cls %>"><span class="ts"><%= ts %></span><%= rest %></span>
+    <% }) %>
+  </div>
+</div>
+
+<script>
+  const box = document.getElementById('logbox');
+  box.scrollTop = box.scrollHeight;
+
+  let c = 15;
+  const cdEl = document.getElementById('cd');
+
+  function renderLines(lines) {
+    box.innerHTML = lines.map(line => {
+      let cls = 'info';
+      if (line.includes('WARNING')) cls = 'warn';
+      if (line.includes('ERROR'))   cls = 'error';
+      const ts   = line.slice(0, 19);
+      const rest = line.slice(19).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return `<span class="log-line ${cls}"><span class="ts">${ts}</span>${rest}</span>`;
+    }).join('\n');
+    box.scrollTop = box.scrollHeight;
+  }
+
+  setInterval(() => {
+    c--;
+    cdEl.textContent = c;
+    if (c <= 0) {
+      c = 15;
+      fetch('/api/logs')
+        .then(r => r.json())
+        .then(d => renderLines(d.lines))
+        .catch(() => {});
+    }
+  }, 1000);
+</script>
+</body>
+</html>

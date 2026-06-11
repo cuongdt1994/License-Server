@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bật 2FA — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif;
+           min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+            padding: 36px; width: 480px; max-width: 95vw; }
+    .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px;
+                  display: flex; align-items: center; gap: 8px; }
+    .card-title i { color: var(--primary); font-size: 1.3rem; }
+    .sub { font-size: .82rem; color: var(--muted); margin-bottom: 24px; }
+    .qr-wrap { text-align: center; margin: 20px 0; }
+    .qr-wrap img { border: 4px solid #fff; border-radius: 12px; }
+    .steps { background: #161e2e; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; }
+    .steps li { font-size: .82rem; color: var(--muted); margin-bottom: 6px; }
+    .steps li:last-child { margin-bottom: 0; }
+    .steps b { color: var(--text); }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: .78rem; font-weight: 600; color: var(--muted);
+                        text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+    .otp-input { width: 100%; background: #161e2e; color: var(--text); border: 1px solid var(--border);
+                 border-radius: 8px; padding: 12px; font-size: 1.4rem; text-align: center;
+                 letter-spacing: .3em; outline: none; font-family: monospace; }
+    .otp-input:focus { border-color: var(--primary); }
+    .btn-primary { width: 100%; background: var(--primary); color: #fff; border: none;
+                   padding: 12px; border-radius: 8px; font-size: .9rem; font-weight: 700; cursor: pointer; }
+    .btn-primary:hover { opacity: .85; }
+    .btn-back { display: block; text-align: center; margin-top: 12px; color: var(--muted);
+                font-size: .82rem; text-decoration: none; }
+    .btn-back:hover { color: var(--text); }
+    .flash-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b;
+                    padding: 10px 14px; border-radius: 8px; font-size: .875rem; margin-bottom: 16px;
+                    display: flex; align-items: center; gap: 8px; }
+    .secret-box { background: #161e2e; border: 1px solid var(--border); border-radius: 8px;
+                  padding: 10px 14px; font-family: monospace; font-size: .85rem; color: #a5b4fc;
+                  word-break: break-all; text-align: center; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="card-title"><i class="bi bi-shield-lock"></i>Bật 2FA — Google Authenticator</div>
+  <p class="sub">Scan QR code bằng Google Authenticator hoặc Authy, rồi nhập mã để xác nhận.</p>
+
+  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <div class="qr-wrap">
+    <img src="<%= qrDataUrl %>" width="200" height="200" alt="QR Code">
+  </div>
+
+  <div class="steps">
+    <p style="font-size:.78rem;color:var(--muted);font-weight:600;margin-bottom:8px">HOẶC NHẬP THỦ CÔNG:</p>
+    <div class="secret-box"><%= secret %></div>
+    <ol class="steps" style="padding-left:16px;margin:0">
+      <li>Mở <b>Google Authenticator</b> hoặc <b>Authy</b></li>
+      <li>Nhấn <b>"+"</b> → <b>"Scan QR"</b> hoặc nhập key thủ công</li>
+      <li>Nhập mã 6 chữ số bên dưới để xác nhận</li>
+    </ol>
+  </div>
+
+  <form method="POST" action="/settings/setup-2fa">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+    <div class="form-group">
+      <label>Mã xác nhận OTP</label>
+      <input type="text" name="token" class="otp-input" maxlength="6" inputmode="numeric"
+             pattern="[0-9]{6}" placeholder="000000" autocomplete="one-time-code" autofocus required>
+    </div>
+    <button type="submit" class="btn-primary"><i class="bi bi-shield-check me-2"></i>Xác nhận & Bật 2FA</button>
+  </form>
+  <a href="/settings" class="btn-back"><i class="bi bi-arrow-left me-1"></i>Quay lại Settings</a>
+</div>
+</body>
+</html>

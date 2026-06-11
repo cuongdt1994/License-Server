@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%= mid %> — Server Control</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin:0; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px;
+              display:flex; align-items:center; justify-content: space-between; }
+    .topbar-brand { font-weight:700; display:flex; align-items:center; gap:8px; }
+    .topbar-brand i { color: var(--primary); font-size:1.3rem; }
+    .nav-btns a { color:#d1d5db; text-decoration:none; padding:6px 14px; border-radius:6px; font-size:.875rem; }
+    .nav-btns a:hover { background: var(--border); color:#fff; }
+    .page { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .card-d { background: var(--surface); border:1px solid var(--border); border-radius:12px;
+              padding:20px; margin-bottom:18px; }
+    .card-d h6 { margin:0 0 12px; font-size:.95rem; font-weight:700; color:#e5e7eb;
+                 display:flex; align-items:center; gap:8px; }
+    .stat-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:12px; }
+    .stat { background:#161e2e; border:1px solid var(--border); border-radius:10px; padding:14px; }
+    .stat-l { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+    .stat-v { font-size:1.4rem; font-weight:700; margin-top:6px; }
+    .bar    { height:6px; background:#374151; border-radius:3px; margin-top:8px; overflow:hidden; }
+    .bar > div { height:100%; transition: width .3s; }
+    .bar-cpu  > div { background: #34d399; }
+    .bar-mem  > div { background: #60a5fa; }
+    .bar-disk > div { background: #fbbf24; }
+    .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:.75rem; font-weight:700; }
+    .pill-green { background:#064e3b; color:#34d399; }
+    .pill-red   { background:#7f1d1d; color:#f87171; }
+    .pill-amber { background:#451a03; color:#fbbf24; }
+    .pill-gray  { background:#374151; color:#9ca3af; }
+    .btn-c { display:inline-flex; align-items:center; gap:6px; padding:9px 16px;
+             border:none; border-radius:8px; font-size:.875rem; font-weight:600; cursor:pointer;
+             text-decoration:none; }
+    .btn-start   { background:#065f46; color:#fff; }
+    .btn-stop    { background:#7f1d1d; color:#fff; }
+    .btn-restart { background:#1e40af; color:#fff; }
+    .btn-c:hover { opacity:.85; }
+    .btn-c:disabled { opacity:.4; cursor:not-allowed; }
+    label { font-size:.78rem; font-weight:600; color: var(--muted);
+            text-transform:uppercase; letter-spacing:.05em; display:block; margin-bottom:5px; }
+    input, textarea, select { width:100%; background:#161e2e; color:var(--text); border:1px solid var(--border);
+                      border-radius:8px; padding:9px 12px; font-size:.875rem; outline:none; font-family:inherit; }
+    input:focus, textarea:focus { border-color: var(--primary); }
+    textarea { font-family: monospace; font-size:.8rem; min-height:80px; }
+    .flash { padding:12px 16px; border-radius:8px; margin-bottom:18px; font-size:.875rem;
+             white-space:pre-wrap; font-family:monospace; }
+    .flash-success { background:#064e3b; color:#6ee7b7; border:1px solid #065f46; }
+    .flash-danger  { background:#7f1d1d; color:#fca5a5; border:1px solid #991b1b; }
+    code { background:#161e2e; color:#a5b4fc; padding:2px 6px; border-radius:4px; font-size:.78rem; }
+    pre.copy-block { background:#0b1019; border:1px solid var(--border); border-radius:8px;
+                     padding:14px; margin:0; color:#a5b4fc; font-size:.82rem;
+                     overflow-x:auto; white-space:pre-wrap; word-break:break-all; }
+    .copy-wrap { position:relative; }
+    .copy-btn { position:absolute; top:8px; right:8px; background:#374151; color:#fff;
+                border:none; padding:5px 10px; border-radius:6px; cursor:pointer;
+                font-size:.72rem; font-weight:600; }
+    .copy-btn:hover { background:#4b5563; }
+    .proc-list { background:#0b1019; border:1px solid var(--border); border-radius:8px;
+                 padding:10px; font-family:monospace; font-size:.78rem; max-height:140px; overflow-y:auto;
+                 white-space:pre; color:#a8ff78; }
+    .term-out { background:#000; color:#a8ff78; font-family: monospace; font-size:.82rem;
+                border-radius:8px; padding:10px; min-height:200px; max-height:400px;
+                overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+    .risk-events { background:#0b1019; border:1px solid var(--border); border-radius:8px;
+                   padding:10px; font-family:monospace; font-size:.76rem; max-height:150px; overflow-y:auto; }
+    .safe-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/logout" style="color:#f87171">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <h4 style="margin:0"><i class="bi bi-hdd-network me-2" style="color:var(--primary)"></i><code><%= mid %></code></h4>
+      <div class="text-muted mt-1" style="font-size:.85rem">
+        Tier: <%= TIERS[entry.tier || 'basic'].label %> · Max: <%= entry.max_players %> ·
+        <% if (isOnline) { %><span class="pill pill-green">Online</span><% } else { %><span class="pill pill-gray">Offline</span><% } %>
+        <% if (expired) { %> <span class="pill pill-red">Expired</span><% } %>
+      </div>
+    </div>
+    <a href="/machines" class="btn btn-sm btn-outline-secondary">← Quay lại</a>
+  </div>
+
+  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <%
+    var risk = riskSummary || { level: 'none', score: 0, recent_count: 0 };
+    var riskClass = risk.level === 'quarantine' || risk.level === 'high' ? 'pill-red'
+                 : risk.level === 'medium' ? 'pill-amber'
+                 : risk.level === 'low' ? 'pill-gray'
+                 : 'pill-green';
+  %>
+  <div class="card-d">
+    <h6><i class="bi bi-shield-exclamation"></i> License risk</h6>
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <span class="pill <%= riskClass %>"><%= risk.level %></span>
+      <span>Score: <code><%= risk.score %>/100</code></span>
+      <span style="color:var(--muted);font-size:.82rem">Recent events: <%= risk.recent_count || 0 %></span>
+    </div>
+    <% if (riskEvents && riskEvents.length) { %>
+      <div class="risk-events mt-3">
+        <% riskEvents.forEach(function(ev) { %>
+          <div><%= ev.ts %> | <%= ev.type %> | weight=<%= ev.weight %> | <%= JSON.stringify(ev.details || {}) %></div>
+        <% }) %>
+      </div>
+    <% } %>
+  </div>
+
+  <!-- ── Agent ─────────────────────────────────────────────────────────── -->
+  <div class="card-d">
+    <h6><i class="bi bi-cpu"></i> Agent điều khiển từ xa</h6>
+
+    <% if (agentInfo) { %>
+      <div class="d-flex align-items-center gap-3 mb-3 flex-wrap" style="font-size:.875rem">
+        <% if (agentInfo.online) { %>
+          <span class="pill pill-green"><i class="bi bi-broadcast"></i> Online</span>
+        <% } else if (agentInfo.last_seen) { %>
+          <span class="pill pill-amber">Agent offline</span>
+        <% } else { %>
+          <span class="pill pill-gray">Đã cấp token, chờ agent kết nối</span>
+        <% } %>
+        <% if (agentInfo.agent_ip) { %><span>IP: <code><%= agentInfo.agent_ip %></code></span><% } %>
+        <% if (agentInfo.agent_ver) { %><span>Ver: <code><%= agentInfo.agent_ver %></code></span><% } %>
+        <% if (agentInfo.last_seen) { %>
+          <span>Last seen: <code><%= new Date(agentInfo.last_seen).toLocaleString() %></code></span>
+        <% } else { %>
+          <span style="color:var(--muted)">Chưa từng kết nối — agent sẽ tự cài lần sau khi gs khởi động (cần gs chạy với root).</span>
+        <% } %>
+        <span class="ms-auto"></span>
+        <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/agent-rotate"
+              onsubmit="return confirm('Cấp lại token? Agent đang chạy sẽ bị mất kết nối — gs sẽ tự cài lại lần khởi động sau.')">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="btn-c" style="background:#374151;color:#fff">Cấp lại token</button>
+        </form>
+        <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/agent-uninstall"
+              onsubmit="return confirm(<%- JSON.stringify(`Gỡ agent của ${mid}?`) %>)">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button class="btn-c" style="background:#7f1d1d;color:#fff">Gỡ agent</button>
+        </form>
+      </div>
+    <% } else { %>
+      <div class="alert alert-warning" style="background:#451a03;color:#fbbf24;border:1px solid #92400e;font-size:.85rem">
+        <i class="bi bi-exclamation-triangle"></i>
+        Chưa cấp token. Token sẽ được tạo tự động khi gs gọi <code>AUTH</code> lần đầu — agent điều khiển từ xa cũng sẽ tự cài (yêu cầu gs chạy với root).
+        Hoặc bấm "Tạo lệnh cài đặt" để cài thủ công.
+      </div>
+    <% } %>
+
+    <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/agent-install" class="row g-2 align-items-end">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <div class="col-md-4">
+        <label>ServerDir (PWI root)</label>
+        <input name="server_dir" value="<%= agentInfo?.server_dir || 'pwserver' %>" placeholder="pwserver">
+      </div>
+      <div class="col-md-4">
+        <button class="btn-c" style="background:var(--primary);color:#fff;width:100%;justify-content:center">
+          <i class="bi bi-clipboard-plus"></i>
+          <%= agentInfo ? 'Tạo lại lệnh cài đặt' : 'Tạo lệnh cài đặt' %>
+        </button>
+      </div>
+      <div class="col-md-4 text-end" style="font-size:.78rem;color:var(--muted)">
+        Lệnh cài đặt sẽ hiện ở banner thông báo, chỉ cần copy & paste vào máy đích.
+      </div>
+    </form>
+
+    <% if (agentInfo) { %>
+      <div class="mt-3" style="font-size:.78rem;color:var(--muted)">
+        Gỡ agent bằng nút bên trên; nếu cần cài lại, tạo lệnh cài đặt mới từ form này.
+      </div>
+    <% } %>
+  </div>
+
+  <!-- ── Monitoring ─────────────────────────────────────────────────────── -->
+  <div class="card-d">
+    <h6>
+      <i class="bi bi-activity"></i> Giám sát hệ thống
+      <span id="monStatus" style="font-size:.7rem;color:var(--muted);font-weight:400;margin-left:auto"></span>
+    </h6>
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-l">CPU</div>
+        <div class="stat-v" id="cpuVal">—</div>
+        <div class="bar bar-cpu"><div id="cpuBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat">
+        <div class="stat-l">RAM</div>
+        <div class="stat-v" id="memVal">—</div>
+        <div class="bar bar-mem"><div id="memBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat">
+        <div class="stat-l">Disk /</div>
+        <div class="stat-v" id="diskVal">—</div>
+        <div class="bar bar-disk"><div id="diskBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat">
+        <div class="stat-l">Load (1/5/15)</div>
+        <div class="stat-v" id="loadVal" style="font-size:1rem">—</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:6px" id="upVal">—</div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">Tiến trình <code>gs</code> đang chạy:</div>
+      <div class="proc-list" id="procList">—</div>
+    </div>
+  </div>
+
+  <!-- ── Control ────────────────────────────────────────────────────────── -->
+  <div class="card-d">
+    <h6><i class="bi bi-power"></i> Điều khiển game server</h6>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">
+      Lệnh được đẩy xuống agent qua kênh đảo ngược. Start chạy gs01 + is61 + is38.
+      Stop pkill toàn bộ component. Restart = stop → wait 5s → start.
+    </p>
+    <div class="d-flex gap-2 flex-wrap">
+      <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/start"
+            onsubmit="return confirm('Start game server?')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-c btn-start" <%= agentInfo?.online ? '' : 'disabled' %>><i class="bi bi-play-fill"></i> Start</button>
+      </form>
+      <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/stop"
+            onsubmit="return confirm('Dừng TẤT CẢ tiến trình game server?\nNgười chơi sẽ bị kick.')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-c btn-stop" <%= agentInfo?.online ? '' : 'disabled' %>><i class="bi bi-stop-fill"></i> Stop</button>
+      </form>
+      <form method="POST" action="/machine/<%= encodeURIComponent(mid) %>/restart"
+            onsubmit="return confirm('Restart game server (stop → start)?\nNgười chơi sẽ bị kick.')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-c btn-restart" <%= agentInfo?.online ? '' : 'disabled' %>><i class="bi bi-arrow-clockwise"></i> Restart</button>
+      </form>
+    </div>
+    <% if (!agentInfo?.online) { %>
+      <div class="mt-2" style="font-size:.78rem;color:#fbbf24">Cần agent online để dùng các nút này.</div>
+    <% } %>
+  </div>
+
+  <!-- ── Danger zone ────────────────────────────────────────────────────── -->
+  <div class="card-d" style="border-color:#7f1d1d">
+    <h6 style="color:#f87171"><i class="bi bi-exclamation-octagon"></i> Vùng nguy hiểm</h6>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px">
+      Xóa hoàn toàn machine khỏi hệ thống: whitelist, agent token, stats. Lịch sử trong <code>history.json</code> được giữ lại.
+      Sau khi xóa, lần AUTH tiếp theo sẽ auto-register lại từ đầu (key mới, trial 7 ngày).
+    </p>
+    <form method="POST" action="/delete-machine"
+          onsubmit="return confirm(<%- JSON.stringify(`XÓA HOÀN TOÀN machine:\n${mid}\n\nKhông thể hoàn tác. Tiếp tục?`) %>)">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <input type="hidden" name="mid" value="<%= mid %>">
+      <button class="btn-c" style="background:#7f1d1d;color:#fff">
+        <i class="bi bi-trash"></i> Xóa machine khỏi hệ thống
+      </button>
+    </form>
+  </div>
+
+  <!-- ── Quick command runner ───────────────────────────────────────────── -->
+  <div class="card-d">
+    <h6>
+      <i class="bi bi-terminal"></i> Chạy lệnh từ xa
+      <span id="execStatus" style="font-size:.7rem;color:var(--muted);font-weight:400;margin-left:auto"></span>
+    </h6>
+    <% if (agentInfo) { %>
+      <div class="safe-grid">
+        <% (safeActions || []).forEach(function(action) { %>
+          <button class="btn-c safe-action-btn" data-action="<%= action.id %>" style="background:#374151;color:#fff;justify-content:center" <%= agentInfo.online ? '' : 'disabled' %>>
+            <i class="bi bi-lightning-charge"></i> <%= action.label %>
+          </button>
+        <% }) %>
+      </div>
+      <% if (!shellEnabled) { %>
+        <div style="color:#fbbf24;font-size:.85rem;margin-top:10px">Advanced shell dang tat trong Settings. Safe actions van hoat dong.</div>
+      <% } %>
+      <p style="font-size:.8rem;color:var(--muted);margin-bottom:8px">
+        Gửi script bash xuống agent. Output sẽ trả về sau khi lệnh chạy xong (timeout ~5 phút).
+      </p>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:.78rem;color:var(--muted)">Timeout</span>
+        <input id="execTimeout" type="number" min="5" max="300" value="<%= shellTimeout || 120 %>" style="width:90px">
+      </div>
+      <textarea id="execScript" placeholder="ví dụ: ls -la /pwserver/gamed && tail -n 20 /pwserver/logs/gs01.log"></textarea>
+      <div class="d-flex gap-2 mt-2">
+        <button id="btnExec" class="btn-c" style="background:var(--primary);color:#fff" <%= agentInfo.online && shellEnabled ? '' : 'disabled' %>>
+          <i class="bi bi-send"></i> Chạy
+        </button>
+        <button id="btnExecClear" class="btn-c" style="background:#374151;color:#fff" type="button">Clear output</button>
+      </div>
+      <div class="term-out mt-2" id="execOut">$ (output sẽ hiển thị ở đây)</div>
+    <% } else { %>
+      <div style="color:var(--muted);font-size:.85rem">Cài agent trước để dùng tính năng này.</div>
+    <% } %>
+  </div>
+</div>
+
+<script>
+const MID = <%- JSON.stringify(mid) %>;
+const HAS_AGENT = <%- agentInfo ? 'true' : 'false' %>;
+const CSRF_TOKEN = <%- JSON.stringify(csrfToken) %>;
+
+// ── Monitoring poll ──────────────────────────────────────────────────────
+async function pollMonitor() {
+  if (!HAS_AGENT) { document.getElementById('monStatus').textContent = 'Cài agent để xem'; return; }
+  document.getElementById('monStatus').textContent = 'Đang lấy dữ liệu...';
+  try {
+    const r = await fetch('/api/machine/' + encodeURIComponent(MID) + '/monitor');
+    if (r.status === 204) { document.getElementById('monStatus').textContent = 'Chưa có dữ liệu — chờ agent gửi...'; return; }
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    document.getElementById('cpuVal').textContent  = d.cpu + '%';
+    document.getElementById('cpuBar').style.width  = d.cpu + '%';
+    document.getElementById('memVal').textContent  = d.mem.used + '/' + d.mem.total + ' MB (' + d.mem.pct + '%)';
+    document.getElementById('memBar').style.width  = d.mem.pct + '%';
+    document.getElementById('diskVal').textContent = (d.disk.used || '?') + ' / ' + (d.disk.size || '?') + ' (' + (d.disk.pct || 0) + '%)';
+    document.getElementById('diskBar').style.width = (d.disk.pct || 0) + '%';
+    document.getElementById('loadVal').textContent = d.load || '—';
+    document.getElementById('upVal').textContent   = d.uptime || '';
+    document.getElementById('procList').textContent = d.gs_procs.length ? d.gs_procs.join('\n') : '(không có tiến trình gs)';
+    const age = d.fetched_at ? Math.floor((Date.now() - d.fetched_at) / 1000) + 's' : '';
+    document.getElementById('monStatus').textContent = 'Cập nhật ' + new Date().toLocaleTimeString() + (age ? ' (snapshot ' + age + ' trước)' : '');
+  } catch (e) {
+    document.getElementById('monStatus').textContent = 'Lỗi: ' + e.message;
+  }
+}
+if (HAS_AGENT) { pollMonitor(); setInterval(pollMonitor, 10000); }
+
+// ── Exec ─────────────────────────────────────────────────────────────────
+function appendOut(line) {
+  const el = document.getElementById('execOut');
+  el.textContent += '\n' + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function runExec() {
+  const scriptEl = document.getElementById('execScript');
+  const script = scriptEl.value.trim();
+  if (!script) return;
+  const timeoutEl = document.getElementById('execTimeout');
+  const timeoutSec = timeoutEl ? parseInt(timeoutEl.value, 10) : undefined;
+  const btn = document.getElementById('btnExec');
+  btn.disabled = true; document.getElementById('execStatus').textContent = 'Đang gửi...';
+  appendOut('\n$ ' + script.split('\n').join('\n  '));
+  try {
+    const r = await fetch('/api/machine/' + encodeURIComponent(MID) + '/exec', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+      body: JSON.stringify({ script, timeoutSec }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      appendOut('[ERR] ' + (e.error || ('http ' + r.status)));
+      document.getElementById('execStatus').textContent = '';
+      btn.disabled = false; return;
+    }
+    const { id } = await r.json();
+    document.getElementById('execStatus').textContent = 'Đang chờ kết quả...';
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(rs => setTimeout(rs, 1500));
+      const rr = await fetch('/api/machine/' + encodeURIComponent(MID) + '/exec/' + id);
+      if (rr.status === 204) continue;
+      if (!rr.ok) { appendOut('[ERR] http ' + rr.status); break; }
+      const data = await rr.json();
+      if (data.stdout) appendOut(data.stdout.trimEnd());
+      if (data.stderr) appendOut('[stderr] ' + data.stderr.trimEnd());
+      appendOut('[exit=' + data.code + ']');
+      break;
+    }
+    document.getElementById('execStatus').textContent = 'Xong';
+  } catch (e) {
+    appendOut('[ERR] ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runSafeAction(action) {
+  document.getElementById('execStatus').textContent = 'Dang gui safe action...';
+  appendOut('\n$ safe-action ' + action);
+  try {
+    const r = await fetch('/api/machine/' + encodeURIComponent(MID) + '/safe-action', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+      body: JSON.stringify({ action, lines: 200 }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      appendOut('[ERR] ' + (e.error || ('http ' + r.status)));
+      document.getElementById('execStatus').textContent = '';
+      return;
+    }
+    const { id, label } = await r.json();
+    document.getElementById('execStatus').textContent = 'Dang cho ket qua...';
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(rs => setTimeout(rs, 1500));
+      const rr = await fetch('/api/machine/' + encodeURIComponent(MID) + '/exec/' + id);
+      if (rr.status === 204) continue;
+      if (!rr.ok) { appendOut('[ERR] http ' + rr.status); break; }
+      const data = await rr.json();
+      if (label) appendOut('[action] ' + label);
+      if (data.stdout) appendOut(data.stdout.trimEnd());
+      if (data.stderr) appendOut('[stderr] ' + data.stderr.trimEnd());
+      appendOut('[exit=' + data.code + ']');
+      break;
+    }
+    document.getElementById('execStatus').textContent = 'Xong';
+  } catch (e) {
+    appendOut('[ERR] ' + e.message);
+  }
+}
+
+if (HAS_AGENT) {
+  const execBtn = document.getElementById('btnExec');
+  if (execBtn) execBtn.addEventListener('click', runExec);
+  document.querySelectorAll('.safe-action-btn').forEach(btn => {
+    btn.addEventListener('click', () => runSafeAction(btn.dataset.action));
+  });
+  document.getElementById('btnExecClear').addEventListener('click', () => {
+    document.getElementById('execOut').textContent = '$ (cleared)';
+  });
+}
+</script>
+</body>
+</html>

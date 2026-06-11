@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body    { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border);
+              padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
+                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
+    .nav-btns a:hover      { background: var(--border); color: #fff; }
+    .nav-btns a.active     { background: var(--primary); color: #fff; }
+    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
+    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
+    .page   { padding: 24px; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+    .page-header h5 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+    .tcard  { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    table   { width: 100%; border-collapse: collapse; }
+    thead th { background: #161e2e; color: #9ca3af; font-size: .78rem; font-weight: 600;
+               text-transform: uppercase; letter-spacing: .05em; padding: 12px 16px; text-align: left; white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #273044; }
+    tbody td { padding: 11px 16px; font-size: .875rem; color: var(--text); vertical-align: middle; }
+    .empty-state { padding: 60px 20px; text-align: center; color: var(--muted); }
+    .empty-state i { font-size: 2.5rem; display: block; margin-bottom: 12px; color: var(--border); }
+    code { background: #161e2e; color: #a5b4fc; padding: 2px 6px; border-radius: 4px; font-size: .78rem; }
+    /* Event pills */
+    .ev-online  { display: inline-flex; align-items: center; gap: 5px;
+                  background: #064e3b; color: #34d399; border-radius: 999px;
+                  padding: 3px 10px; font-size: .78rem; font-weight: 700; }
+    .ev-offline { display: inline-flex; align-items: center; gap: 5px;
+                  background: #1f2937; color: #9ca3af; border-radius: 999px;
+                  padding: 3px 10px; font-size: .78rem; font-weight: 700; }
+    .ev-offline.reason-revoked  { background: #7f1d1d; color: #f87171; }
+    .ev-offline.reason-expired  { background: #451a03; color: #fbbf24; }
+    .ev-offline.reason-overlimit { background: #7c2d12; color: #fb923c; }
+    /* Filter badge */
+    .filter-bar { display: flex; align-items: center; gap: 10px; }
+    .filter-badge { background: var(--primary); color: #fff; padding: 4px 12px;
+                    border-radius: 999px; font-size: .8rem; display: flex; align-items: center; gap: 6px; }
+    .filter-badge a { color: #fff; text-decoration: none; opacity: .7; }
+    .filter-badge a:hover { opacity: 1; }
+    .info-bar { font-size: .8rem; color: var(--muted); }
+    /* Reason labels */
+    .reason-tag { font-size: .75rem; color: var(--muted); margin-left: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand">
+    <i class="bi bi-shield-lock-fill"></i>License Manager
+  </div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/bans">IP Bans</a>
+    <a href="/history" class="active">History</a>
+    <a href="/logs">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-header">
+    <h5><i class="bi bi-clock-history me-2" style="color:var(--primary)"></i>Lịch sử Online / Offline</h5>
+    <div class="filter-bar">
+      <% if (filter_mid) { %>
+        <span class="filter-badge">
+          <i class="bi bi-funnel-fill"></i>
+          <%= filter_mid %>
+          <a href="/history" title="Xóa bộ lọc"><i class="bi bi-x-lg"></i></a>
+        </span>
+      <% } %>
+      <span class="info-bar"><%= events.length %> sự kiện gần nhất</span>
+    </div>
+  </div>
+
+  <div class="tcard">
+    <% if (events.length === 0) { %>
+    <div class="empty-state">
+      <i class="bi bi-journal-x"></i>
+      Chưa có sự kiện nào được ghi lại
+    </div>
+    <% } else { %>
+    <table>
+      <thead>
+        <tr>
+          <th>Thời gian</th>
+          <th>Machine ID</th>
+          <th>Sự kiện</th>
+          <th>IP</th>
+          <th>Lý do</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% events.forEach(function(ev) {
+             var isOnline = ev.event === 'online';
+             var reasonClass = '';
+             if (!isOnline) {
+               if (ev.reason === 'revoked')   reasonClass = 'reason-revoked';
+               if (ev.reason === 'expired')   reasonClass = 'reason-expired';
+               if (ev.reason === 'overlimit') reasonClass = 'reason-overlimit';
+             }
+             var reasonMap = {
+               timeout:   'Không nhận heartbeat',
+               revoked:   'Bị thu hồi license',
+               expired:   'License hết hạn',
+               overlimit: 'Vượt giới hạn player',
+             };
+        %>
+        <tr>
+          <td style="color:var(--muted);font-size:.8rem;white-space:nowrap"><%= ev.ts %></td>
+          <td>
+            <a href="/history?mid=<%= encodeURIComponent(ev.mid) %>"
+               style="color:#a5b4fc;text-decoration:none">
+              <code><%= ev.mid %></code>
+            </a>
+          </td>
+          <td>
+            <% if (isOnline) { %>
+              <span class="ev-online"><i class="bi bi-arrow-up-circle-fill"></i>Online</span>
+            <% } else { %>
+              <span class="ev-offline <%= reasonClass %>"><i class="bi bi-arrow-down-circle-fill"></i>Offline</span>
+            <% } %>
+          </td>
+          <td style="font-family:monospace;font-size:.82rem"><%= ev.ip || '—' %></td>
+          <td style="color:var(--muted);font-size:.8rem">
+            <%= reasonMap[ev.reason] || (ev.reason ? ev.reason : (isOnline ? '—' : '—')) %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <% } %>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Import CSV — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body    { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border);
+              padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
+                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
+    .nav-btns a:hover      { background: var(--border); color: #fff; }
+    .nav-btns a.active     { background: var(--primary); color: #fff; }
+    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
+    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
+    .page   { padding: 24px; max-width: 760px; }
+    .page-header h5 { margin: 0 0 6px; font-size: 1.1rem; font-weight: 700; }
+    .page-header p  { color: var(--muted); font-size: .85rem; margin: 0 0 20px; }
+    .section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+    .upload-area { border: 2px dashed var(--border); border-radius: 12px; padding: 32px;
+                   text-align: center; cursor: pointer; transition: all .15s; background: #161e2e; }
+    .upload-area:hover, .upload-area.dragover { border-color: var(--primary); background: #1a1f3a; }
+    .upload-area i { font-size: 2.5rem; color: var(--primary); display: block; margin-bottom: 10px; }
+    .upload-area .label { font-size: .92rem; font-weight: 600; }
+    .upload-area .hint  { font-size: .78rem; color: var(--muted); margin-top: 6px; }
+    .upload-area .filename { color: #34d399; font-size: .85rem; margin-top: 10px; font-weight: 700; word-break: break-all; }
+    input[type=file] { display: none; }
+    .btn-row { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .btn-primary { background: var(--primary); color: #fff; border: none; padding: 9px 20px;
+                   border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer; }
+    .btn-primary:hover { opacity: .85; }
+    .btn-outline { background: transparent; color: var(--muted); border: 1px solid var(--border);
+                   padding: 8px 18px; border-radius: 8px; font-size: .875rem; cursor: pointer; text-decoration: none; }
+    .btn-outline:hover { background: var(--border); color: var(--text); }
+    .csv-spec { background: #0d1117; border-radius: 8px; padding: 14px 18px; margin-top: 14px;
+                font-family: monospace; font-size: .82rem; color: #a5b4fc; overflow-x: auto; white-space: pre; }
+    .result-box { padding: 18px; border-radius: 10px; margin-bottom: 18px; }
+    .result-ok   { background: #064e3b; border: 1px solid #065f46; color: #6ee7b7; }
+    .result-err  { background: #7f1d1d; border: 1px solid #991b1b; color: #fca5a5; }
+    .result-stats { display: flex; gap: 24px; margin-top: 8px; font-size: .9rem; }
+    .result-stats span b { font-size: 1.4rem; display: block; }
+    .err-list { background: #161e2e; border-radius: 8px; padding: 12px 16px; margin-top: 12px;
+                font-size: .8rem; color: var(--muted); max-height: 200px; overflow-y: auto; }
+    .err-list li { margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/bans">IP Bans</a>
+    <a href="/history">History</a>
+    <a href="/logs">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-header">
+    <h5><i class="bi bi-upload me-2" style="color:var(--primary)"></i>Import CSV</h5>
+    <p>Nhập hàng loạt license từ file CSV. Các machine ID đã tồn tại sẽ được bỏ qua.</p>
+  </div>
+
+  <% if (result) { %>
+    <% if (result.error) { %>
+      <div class="result-box result-err">
+        <i class="bi bi-exclamation-circle me-2"></i><%= result.error %>
+      </div>
+    <% } else { %>
+      <div class="result-box result-ok">
+        <i class="bi bi-check-circle me-2"></i>Import hoàn tất.
+        <div class="result-stats">
+          <span><b style="color:#34d399"><%= result.added %></b>Thêm mới</span>
+          <span><b style="color:#fbbf24"><%= result.skipped %></b>Bỏ qua</span>
+        </div>
+        <% if (result.errors && result.errors.length) { %>
+          <ul class="err-list">
+            <% result.errors.forEach(function(e) { %><li><%= e %></li><% }) %>
+          </ul>
+        <% } %>
+      </div>
+    <% } %>
+  <% } %>
+
+  <div class="section">
+    <form method="POST" action="/import" enctype="multipart/form-data" id="importForm">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <label class="upload-area" id="dropZone">
+        <input type="file" name="csvfile" id="csvfile" accept=".csv,text/csv" required>
+        <i class="bi bi-cloud-arrow-up"></i>
+        <div class="label">Kéo thả file CSV vào đây hoặc click để chọn</div>
+        <div class="hint">Tối đa 2MB · UTF-8</div>
+        <div class="filename" id="filename"></div>
+      </label>
+      <div class="btn-row">
+        <button type="submit" class="btn-primary"><i class="bi bi-upload me-1"></i>Upload &amp; Import</button>
+        <a href="/machines" class="btn-outline"><i class="bi bi-arrow-left me-1"></i>Quay lại Machines</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="section">
+    <h6 style="margin:0 0 10px;font-size:.95rem;font-weight:700">
+      <i class="bi bi-file-earmark-text me-1" style="color:var(--primary)"></i>Định dạng CSV
+    </h6>
+    <p style="font-size:.85rem;color:var(--muted);margin:0">
+      5 cột, phân tách bởi dấu phẩy. Dòng đầu (header) hoặc bắt đầu bằng <code>#</code> sẽ bị bỏ qua.
+    </p>
+    <div class="csv-spec">machine_id,tier,max_players,note,expires_at
+aa:bb:cc:dd:ee:ff|server-01,basic,30,Khách A,2026-12-31
+11:22:33:44:55:66|server-02,pro,100,VIP — gia hạn năm,2026-06-30
+77:88:99:aa:bb:cc|test-01,trial,10,Dùng thử 7 ngày,</div>
+    <p style="font-size:.78rem;color:var(--muted);margin:10px 0 0">
+      <b>Tiers hợp lệ:</b> trial · basic · pro · unlimited &nbsp;|&nbsp;
+      <b>expires_at:</b> YYYY-MM-DD (để trống nếu không hết hạn)
+    </p>
+  </div>
+</div>
+
+<script>
+  const inp  = document.getElementById('csvfile');
+  const drop = document.getElementById('dropZone');
+  const name = document.getElementById('filename');
+
+  inp.addEventListener('change', () => {
+    name.textContent = inp.files[0] ? '✓ ' + inp.files[0].name : '';
+  });
+
+  ['dragenter', 'dragover'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('dragover'); })
+  );
+  ['dragleave', 'drop'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('dragover'); })
+  );
+  drop.addEventListener('drop', e => {
+    if (e.dataTransfer.files.length) {
+      inp.files = e.dataTransfer.files;
+      name.textContent = '✓ ' + inp.files[0].name;
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IP Bans — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body     { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; }
+    .topbar  { background: var(--surface); border-bottom: 1px solid var(--border);
+               padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
+                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
+    .nav-btns a:hover      { background: var(--border); color: #fff; }
+    .nav-btns a.active     { background: var(--primary); color: #fff; }
+    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
+    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
+    .page    { padding: 24px; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .page-header h5 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+    .btn-add { background: #dc2626; color: #fff; border: none; padding: 8px 18px;
+               border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer;
+               display: flex; align-items: center; gap: 6px; transition: opacity .15s; }
+    .btn-add:hover { opacity: .85; }
+    .tcard   { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    table    { width: 100%; border-collapse: collapse; }
+    thead th { background: #161e2e; color: #9ca3af; font-size: .78rem; font-weight: 600;
+               text-transform: uppercase; letter-spacing: .05em; padding: 12px 16px; text-align: left; }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #273044; }
+    tbody td { padding: 12px 16px; font-size: .875rem; vertical-align: middle; }
+    .empty-state { padding: 60px 20px; text-align: center; color: var(--muted); }
+    .empty-state i { font-size: 2.5rem; display: block; margin-bottom: 12px; color: var(--border); }
+    code { background: #161e2e; color: #f87171; padding: 2px 8px; border-radius: 4px; font-size: .82rem; }
+    .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:.78rem; font-weight:600; }
+    .pill-red  { background:#7f1d1d; color:#f87171; }
+    .pill-gray { background:#374151; color:#9ca3af; }
+    .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: .875rem; display: flex; align-items: center; gap: 10px; }
+    .flash-success { background: #064e3b; color: #6ee7b7; border: 1px solid #065f46; }
+    .flash-danger  { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
+    .info-box { background: #1e2d40; border: 1px solid #2d4a6b; border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; font-size: .85rem; color: #93c5fd; }
+    .info-box code { color: #fbbf24; background: transparent; padding: 0; }
+    .btn-del    { background:#7f1d1d; color:#f87171; border:1px solid #991b1b; padding:4px 10px; border-radius:6px; font-size:.8rem; font-weight:600; cursor:pointer; }
+    .btn-del:hover { background:#991b1b; color:#fff; }
+    .btn-toggle { background:#374151; color:#9ca3af; border:1px solid #4b5563; padding:4px 10px; border-radius:6px; font-size:.8rem; font-weight:600; cursor:pointer; }
+    .btn-toggle:hover { background:#4b5563; color:#fff; }
+    .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:100; align-items:center; justify-content:center; }
+    .overlay.show { display:flex; }
+    .modal-box { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:28px; width:440px; max-width:95vw; }
+    .modal-box h5 { margin:0 0 20px; font-size:1rem; font-weight:700; display:flex; align-items:center; gap:8px; }
+    .form-group { margin-bottom:16px; }
+    .form-group label { display:block; font-size:.8rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
+    .form-group input { width:100%; background:#161e2e; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:.875rem; outline:none; }
+    .form-group input:focus { border-color:var(--primary); }
+    .form-group .hint { font-size:.75rem; color:var(--muted); margin-top:4px; }
+    .modal-footer-btns { display:flex; gap:10px; justify-content:flex-end; margin-top:24px; }
+    .btn-cancel { background:transparent; color:var(--muted); border:1px solid var(--border); padding:8px 18px; border-radius:8px; font-size:.875rem; cursor:pointer; }
+    .btn-cancel:hover { background:var(--border); color:var(--text); }
+    .btn-submit { background:#dc2626; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-size:.875rem; font-weight:600; cursor:pointer; }
+    .btn-submit:hover { opacity:.85; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/bans" class="active">IP Bans</a>
+    <a href="/history">History</a>
+    <a href="/logs">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+
+  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <div class="info-box">
+    <i class="bi bi-info-circle me-2"></i>
+    Hỗ trợ 3 dạng: IP đơn <code>1.2.3.4</code> · Wildcard <code>1.2.3.*</code> · CIDR <code>1.2.3.0/24</code><br>
+    IP bị ban sẽ bị từ chối kết nối TCP ngay lập tức, không cần restart.
+  </div>
+
+  <div class="page-header">
+    <h5><i class="bi bi-slash-circle me-2" style="color:#f87171"></i>Danh sách IP bị ban</h5>
+    <button class="btn-add" onclick="document.getElementById('addOverlay').classList.add('show')">
+      <i class="bi bi-plus-lg"></i> Thêm IP ban
+    </button>
+  </div>
+
+  <div class="tcard">
+    <% if (rows.length === 0) { %>
+    <div class="empty-state">
+      <i class="bi bi-shield-check" style="color:#34d399"></i>
+      Chưa có IP nào bị ban
+    </div>
+    <% } else { %>
+    <table>
+      <thead>
+        <tr>
+          <th>IP / Range</th>
+          <th>Trạng thái</th>
+          <th>Ghi chú</th>
+          <th>Ngày thêm</th>
+          <th>Hành động</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% rows.forEach(function(row) {
+             var range = row[0];
+             var info  = row[1];
+        %>
+        <tr>
+          <td><code><%= range %></code></td>
+          <td>
+            <% if (info.disabled) { %>
+              <span class="pill pill-gray">Tắt</span>
+            <% } else { %>
+              <span class="pill pill-red">Đang ban</span>
+            <% } %>
+          </td>
+          <td style="color:var(--muted)"><%= info.note || '—' %></td>
+          <td style="color:var(--muted);font-size:.8rem"><%= info.added || '—' %></td>
+          <td style="display:flex;gap:6px">
+            <form method="POST" action="/ban-toggle" style="display:inline">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <input type="hidden" name="range" value="<%= range %>">
+              <button type="submit" class="btn-toggle">
+                <i class="bi bi-<%= info.disabled ? 'play' : 'pause' %>"></i>
+                <%= info.disabled ? 'Bật' : 'Tắt' %>
+              </button>
+            </form>
+            <form method="POST" action="/ban-delete" style="display:inline"
+                  onsubmit="return confirm('Xóa ban IP: <%= range %>?')">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                  onsubmit="return confirm('Xóa ban IP: <%= range %>?')">
+              <input type="hidden" name="range" value="<%= range %>">
+              <button type="submit" class="btn-del"><i class="bi bi-trash me-1"></i>Xóa</button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <% } %>
+  </div>
+</div>
+
+<!-- Modal thêm ban -->
+<div class="overlay" id="addOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="modal-box">
+    <h5><i class="bi bi-slash-circle" style="color:#f87171"></i> Thêm IP ban</h5>
+    <form method="POST" action="/ban-add">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <div class="form-group">
+        <label>IP / Range <span style="color:#f87171">*</span></label>
+        <input name="range" placeholder="VD: 1.2.3.4  hoặc  1.2.3.*  hoặc  1.2.3.0/24" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Ghi chú</label>
+        <input name="note" placeholder="VD: Spam bot, VPS lậu...">
+      </div>
+      <div class="modal-footer-btns">
+        <button type="button" class="btn-cancel" onclick="document.getElementById('addOverlay').classList.remove('show')">Hủy</button>
+        <button type="submit" class="btn-submit"><i class="bi bi-ban me-1"></i>Ban</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+</body>
+</html>

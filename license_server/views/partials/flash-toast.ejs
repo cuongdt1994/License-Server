@@ -1,0 +1,167 @@
+<%
+  const toast = typeof flash !== 'undefined' ? flash : null;
+  const toastKind = toast && toast.type === 'success' ? 'success' : 'danger';
+  const toastIcon = toastKind === 'success' ? 'check-circle-fill' : 'exclamation-triangle-fill';
+%>
+<style>
+  .flash-toast-stack {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 3000;
+    display: grid;
+    gap: 10px;
+    width: min(420px, calc(100vw - 32px));
+    pointer-events: none;
+  }
+  .flash-toast {
+    pointer-events: auto;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: start;
+    gap: 12px;
+    overflow: hidden;
+    border: 1px solid var(--toast-border);
+    border-radius: 8px;
+    background: var(--toast-bg);
+    color: var(--toast-text);
+    box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
+    padding: 13px 12px 10px 14px;
+    animation: flashToastIn .18s ease-out;
+  }
+  .flash-toast-success {
+    --toast-bg: #062f26;
+    --toast-border: #047857;
+    --toast-text: #d1fae5;
+    --toast-accent: #34d399;
+  }
+  .flash-toast-danger {
+    --toast-bg: #3b1111;
+    --toast-border: #991b1b;
+    --toast-text: #fee2e2;
+    --toast-accent: #f87171;
+  }
+  .flash-toast-icon {
+    color: var(--toast-accent);
+    font-size: 1rem;
+    line-height: 1.35;
+  }
+  .flash-toast-body {
+    min-width: 0;
+    font-size: .875rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .flash-toast-close {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, .05);
+    color: currentColor;
+    cursor: pointer;
+  }
+  .flash-toast-close:hover {
+    background: rgba(255, 255, 255, .12);
+  }
+  .flash-toast-progress {
+    grid-column: 1 / -1;
+    height: 3px;
+    margin: 2px -12px -10px -14px;
+    background: color-mix(in srgb, var(--toast-accent) 75%, transparent);
+    transform-origin: left;
+    animation: flashToastProgress 4000ms linear forwards;
+  }
+  .flash-toast.is-hiding {
+    animation: flashToastOut .18s ease-in forwards;
+  }
+  @keyframes flashToastIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes flashToastOut {
+    to { opacity: 0; transform: translateY(-8px); }
+  }
+  @keyframes flashToastProgress {
+    from { transform: scaleX(1); }
+    to   { transform: scaleX(0); }
+  }
+  @media (max-width: 640px) {
+    .flash-toast-stack {
+      top: 12px;
+      right: 12px;
+      left: 12px;
+      width: auto;
+    }
+  }
+</style>
+
+<% if (toast) { %>
+<div class="flash-toast-stack" id="flashToastStack" aria-live="polite" aria-atomic="true">
+  <div class="flash-toast flash-toast-<%= toastKind %>" role="alert" data-autohide-ms="4000">
+    <i class="bi bi-<%= toastIcon %> flash-toast-icon" aria-hidden="true"></i>
+    <div class="flash-toast-body"><%= toast.msg %></div>
+    <button type="button" class="flash-toast-close" aria-label="Đóng thông báo" data-toast-close>
+      <i class="bi bi-x-lg" aria-hidden="true"></i>
+    </button>
+    <div class="flash-toast-progress" aria-hidden="true"></div>
+  </div>
+</div>
+<% } %>
+
+<script>
+(() => {
+  const timers = new Set();
+
+  function clearToastTimers() {
+    timers.forEach(timer => window.clearTimeout(timer));
+    timers.clear();
+  }
+
+  function dismissToast(toast) {
+    if (!toast || toast.classList.contains('is-hiding')) return;
+    toast.classList.add('is-hiding');
+    window.setTimeout(() => toast.remove(), 180);
+  }
+
+  window.clearFlashToasts = function clearFlashToasts() {
+    clearToastTimers();
+    document.querySelectorAll('.flash-toast').forEach(dismissToast);
+  };
+
+  const stacks = Array.from(document.querySelectorAll('.flash-toast-stack'));
+  stacks.slice(0, -1).forEach(stack => stack.remove());
+
+  const stack = stacks[stacks.length - 1];
+  if (stack) {
+    const toasts = Array.from(stack.querySelectorAll('.flash-toast'));
+    toasts.slice(0, -1).forEach(toast => toast.remove());
+
+    toasts.slice(-1).forEach(toast => {
+      const close = toast.querySelector('[data-toast-close]');
+      if (close) {
+        close.addEventListener('click', () => window.clearFlashToasts());
+      }
+
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        dismissToast(toast);
+      }, Number(toast.dataset.autohideMs) || 4000);
+      timers.add(timer);
+    });
+  }
+
+  document.addEventListener('submit', () => window.clearFlashToasts(), true);
+  document.addEventListener('click', event => {
+    if (event.target.closest('[data-toast-close]')) return;
+    if (event.target.closest('button, a, [data-clear-flash]')) {
+      window.clearFlashToasts();
+    }
+  }, true);
+  window.addEventListener('beforeunload', clearToastTimers);
+})();
+</script>

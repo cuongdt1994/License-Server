@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Machines — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body     { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; min-height: 100vh; }
+    .topbar  { background: var(--surface); border-bottom: 1px solid var(--border);
+               padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; z-index: 20; }
+    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
+    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
+                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
+    .nav-btns a:hover      { background: var(--border); color: #fff; }
+    .nav-btns a.active     { background: var(--primary); color: #fff; }
+    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
+    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
+    .page    { padding: 24px; max-width: 1480px; margin: 0 auto; }
+    .hero-panel { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 18px; align-items: center;
+                  background: rgba(31,41,55,.92);
+                  border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .hero-copy { min-width: 0; }
+    .eyebrow { color: #93c5fd; font-size: .76rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+    .hero-title { margin: 0; font-size: 1.25rem; font-weight: 800; line-height: 1.25; }
+    .hero-meta { margin-top: 6px; color: var(--muted); font-size: .86rem; }
+    .hero-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric-card { background: rgba(31,41,55,.92); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; box-shadow: 0 14px 35px rgba(0,0,0,.14); }
+    .metric-label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+    .metric-value { margin-top: 7px; font-size: 1.55rem; line-height: 1; font-weight: 800; }
+    .metric-sub { margin-top: 6px; color: var(--muted); font-size: .76rem; }
+    .btn-add { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
+               border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer;
+               display: flex; align-items: center; gap: 6px; transition: opacity .15s; }
+    .btn-add:hover { opacity: .85; }
+    .tcard   { background: rgba(31,41,55,.92); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+                     padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .table-title { display: flex; align-items: center; gap: 8px; font-size: .95rem; font-weight: 700; }
+    .table-title i { color: var(--primary); }
+    .table-hint { color: var(--muted); font-size: .8rem; }
+    .table-scroll { width: 100%; overflow-x: auto; }
+    table    { width: 100%; min-width: 1160px; border-collapse: collapse; }
+    thead th { background: #161e2e; color: #9ca3af; font-size: .78rem; font-weight: 600;
+               text-transform: uppercase; letter-spacing: .05em; padding: 12px 16px; text-align: left; white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #273044; }
+    tbody td { padding: 12px 16px; font-size: .875rem; color: var(--text); vertical-align: middle; }
+    .empty-state { padding: 60px 20px; text-align: center; color: var(--muted); }
+    .empty-state i { font-size: 2.5rem; display: block; margin-bottom: 12px; color: var(--border); }
+    .pill        { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .75rem; font-weight: 700; white-space: nowrap; }
+    .pill-green  { background: #064e3b; color: #34d399; }
+    .pill-red    { background: #7f1d1d; color: #f87171; }
+    .pill-gray   { background: #374151; color: #9ca3af; }
+    .action-row { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+    .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+                border: 1px solid transparent; border-radius: 6px; color: #fff; cursor: pointer;
+                text-decoration: none; font-size: .86rem; transition: opacity .15s, transform .15s; }
+    .icon-btn:hover { opacity: .88; transform: translateY(-1px); color: #fff; }
+    .icon-btn-primary { background: var(--primary); }
+    .icon-btn-info { background: #0e7490; }
+    .icon-btn-purple { background: #7c3aed; }
+    .icon-btn-muted { background: #475569; }
+    .icon-btn-success { background: #065f46; color: #d1fae5; }
+    .icon-btn-danger { background: #991b1b; color: #fee2e2; }
+    code { background: #161e2e; color: #a5b4fc; padding: 2px 6px; border-radius: 4px; font-size: .78rem; }
+    /* Tier badges */
+    .tier-badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 700; }
+    /* Expiry */
+    .expiry-ok      { color: #34d399; font-size: .8rem; }
+    .expiry-warn    { color: #fbbf24; font-size: .8rem; }
+    .expiry-expired { color: #f87171; font-size: .8rem; font-weight: 700; }
+    /* Inline number input */
+    .num-input { width: 70px; background: #161e2e; color: #f9fafb;
+                 border: 1px solid #374151; border-radius: 6px; padding: 4px 8px; font-size: .85rem; }
+    .num-input:focus { outline: none; border-color: var(--primary); }
+    .btn-tiny  { background: var(--primary); color: #fff; border: none; border-radius: 6px;
+                 padding: 4px 8px; font-size: .8rem; cursor: pointer; }
+    .btn-tiny:hover { opacity: .85; }
+    /* Modal */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; align-items: center; justify-content: center; }
+    .overlay.show { display: flex; }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+                 padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
+    .modal-box h5 { margin: 0 0 20px; font-size: 1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: .78rem; font-weight: 600; color: var(--muted);
+                        text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+    .form-group input, .form-group select {
+      width: 100%; background: #161e2e; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 12px; font-size: .875rem; outline: none; }
+    .form-group input:focus, .form-group select:focus { border-color: var(--primary); }
+    .form-group .hint { font-size: .73rem; color: var(--muted); margin-top: 4px; }
+    .modal-footer-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border);
+                  padding: 8px 18px; border-radius: 8px; font-size: .875rem; cursor: pointer; }
+    .btn-cancel:hover { background: var(--border); color: var(--text); }
+    .btn-submit { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
+                  border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer; }
+    .btn-submit:hover { opacity: .85; }
+    /* Tier selector grid */
+    .tier-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .tier-opt  { border: 2px solid var(--border); border-radius: 8px; padding: 10px 12px;
+                 cursor: pointer; transition: all .15s; }
+    .tier-opt:hover { border-color: var(--primary); }
+    .tier-opt input[type=radio] { display: none; }
+    .tier-opt input[type=radio]:checked ~ .tier-label { font-weight: 700; }
+    .tier-opt.selected { border-color: var(--primary); background: #1a1f3a; }
+    .tier-label { font-size: .85rem; font-weight: 600; }
+    .tier-sub   { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+    /* trial_days row */
+    .trial-only { display: none; }
+    @media (max-width: 900px) {
+      .hero-panel { grid-template-columns: 1fr; }
+      .hero-actions { justify-content: flex-start; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      .page { padding: 18px; }
+    }
+    @media (max-width: 560px) {
+      .metric-grid { grid-template-columns: 1fr; }
+      .table-toolbar { align-items: flex-start; flex-direction: column; }
+      .btn-add { width: 100%; justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand">
+    <i class="bi bi-shield-lock-fill"></i>License Manager
+  </div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines" class="active">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/bans">IP Bans</a>
+    <a href="/history">History</a>
+    <a href="/logs">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+
+  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <%
+    var machineRows = Array.isArray(rows) ? rows : [];
+    var totalMachines = machineRows.length;
+    var onlineMachines = machineRows.filter(function(row) { return row.isOnline && !row.revoked && !row.expired; }).length;
+    var expiringSoon = machineRows.filter(function(row) {
+      return row.expiry && !row.expired && Number(row.expiry.daysLeft) <= 3;
+    }).length;
+    var revokedMachines = machineRows.filter(function(row) { return row.revoked; }).length;
+  %>
+
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow">License server</div>
+      <h1 class="hero-title">Quản lý máy được cấp phép</h1>
+      <div class="hero-meta">Theo dõi trạng thái, hạn dùng, key và thao tác quản trị cho từng machine.</div>
+    </div>
+    <div class="hero-actions">
+      <button class="btn-add" data-modal-open="addOverlay">
+        <i class="bi bi-plus-lg"></i> Cấp license mới
+      </button>
+    </div>
+  </section>
+
+  <section class="metric-grid" aria-label="Tổng quan license">
+    <div class="metric-card">
+      <div class="metric-label">Tổng machine</div>
+      <div class="metric-value"><%= totalMachines %></div>
+      <div class="metric-sub">Đang có trong whitelist</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Online</div>
+      <div class="metric-value" style="color:#34d399"><%= onlineMachines %></div>
+      <div class="metric-sub">Heartbeat còn hoạt động</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Sắp hết hạn</div>
+      <div class="metric-value" style="color:#fbbf24"><%= expiringSoon %></div>
+      <div class="metric-sub">Còn 3 ngày hoặc ít hơn</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Revoked</div>
+      <div class="metric-value" style="color:#f87171"><%= revokedMachines %></div>
+      <div class="metric-sub">Đã thu hồi quyền dùng</div>
+    </div>
+  </section>
+
+  <div class="tcard">
+    <div class="table-toolbar">
+      <div class="table-title">
+        <i class="bi bi-hdd-stack"></i>
+        Danh sách license
+      </div>
+      <div class="table-hint"><%= totalMachines %> machine · thao tác trực tiếp trên từng dòng</div>
+    </div>
+    <% if (rows.length === 0) { %>
+    <div class="empty-state">
+      <i class="bi bi-hdd-x"></i>
+      Chưa có máy nào được cấp phép
+    </div>
+    <% } else { %>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Machine ID</th>
+          <th>Tier</th>
+          <th>Max Players</th>
+          <th>Peak</th>
+          <th>Risk</th>
+          <th>Trạng thái</th>
+          <th>Hết hạn</th>
+          <th>Ghi chú</th>
+          <th>Ngày cấp</th>
+          <th>Hành động</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% rows.forEach(function(row) {
+             var tier = row.tier || 'basic';
+             var td   = TIERS[tier] || TIERS.basic;
+        %>
+        <tr>
+          <!-- Machine ID -->
+          <td>
+            <code><%= row.mid %></code>
+            <% if (row.auto) { %>
+              <span class="pill" style="background:#374151;color:#9ca3af;margin-left:4px;font-size:.68rem">Auto</span>
+            <% } %>
+            <% if (row.license_key) { %>
+              <div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace"
+                   title="License key">
+                <i class="bi bi-key-fill" style="color:#a78bfa"></i>
+                <%= row.license_key.slice(0, 8) %>…<%= row.license_key.slice(-4) %>
+              </div>
+            <% } %>
+            <% if (Array.isArray(row.allowed_ips) && row.allowed_ips.length) { %>
+              <div style="font-size:.7rem;color:#fbbf24;margin-top:2px"
+                   title="<%= row.allowed_ips.join(', ') %>">
+                <i class="bi bi-shield-fill"></i> IP locked (<%= row.allowed_ips.length %>)
+              </div>
+            <% } %>
+          </td>
+
+          <!-- Tier badge -->
+          <td>
+            <span class="tier-badge" style="background:<%= td.bg %>;color:<%= td.color %>">
+              <%= td.label %>
+            </span>
+          </td>
+
+          <!-- Max Players (inline edit) -->
+          <td>
+            <form method="POST" action="/update-limit" style="display:flex;gap:4px;align-items:center">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <input type="hidden" name="mid" value="<%= row.mid %>">
+              <input type="number" name="max_players" value="<%= row.max_players %>"
+                     min="1" max="9999" class="num-input">
+              <button type="submit" class="btn-tiny" title="Lưu"><i class="bi bi-check-lg"></i></button>
+            </form>
+          </td>
+
+          <!-- Peak players -->
+          <td style="color:#fbbf24;font-weight:700">
+            <%= row.peak_players || 0 %>
+          </td>
+
+          <!-- Risk -->
+          <td>
+            <% var rk = row.risk || { level: 'none', score: 0 };
+               var rcls = rk.level === 'quarantine' || rk.level === 'high' ? 'pill-red'
+                      : rk.level === 'medium' ? 'risk-medium'
+                      : rk.level === 'low' ? 'pill-gray'
+                      : 'pill-green'; %>
+            <% if (rcls === 'risk-medium') { %>
+              <span class="pill" style="background:#451a03;color:#fbbf24"><%= rk.level %></span>
+            <% } else { %>
+              <span class="pill <%= rcls %>"><%= rk.level %></span>
+            <% } %>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:3px"><%= rk.score %>/100</div>
+          </td>
+
+          <!-- Status -->
+          <td>
+            <% if (row.revoked) { %>
+              <span class="pill pill-red">Revoked</span>
+            <% } else if (row.expired) { %>
+              <span class="pill pill-red">Expired</span>
+            <% } else if (row.zombie) { %>
+              <span class="pill" style="background:#451a03;color:#fbbf24">Zombie</span>
+            <% } else if (row.isOnline) { %>
+              <span class="pill pill-green">● Online</span>
+              <div style="font-size:.72rem;color:var(--muted);margin-top:3px">
+                <%= row.currentPlayers %>/<%= row.max_players %> players
+              </div>
+            <% } else { %>
+              <span class="pill pill-gray">Offline</span>
+            <% } %>
+          </td>
+
+          <!-- Expiry -->
+          <td>
+            <% if (row.expiry) {
+                 if (row.expired) { %>
+                   <span class="expiry-expired"><i class="bi bi-x-circle me-1"></i>Hết hạn <%= row.expiry.date %></span>
+            <%   } else if (row.expiry.daysLeft <= 3) { %>
+                   <span class="expiry-warn"><i class="bi bi-exclamation-triangle me-1"></i><%= row.expiry.daysLeft %>d còn lại</span>
+            <%   } else { %>
+                   <span class="expiry-ok"><i class="bi bi-calendar-check me-1"></i><%= row.expiry.daysLeft %>d — <%= row.expiry.date %></span>
+            <%   }
+               } else { %>
+               <span style="color:var(--muted);font-size:.8rem">—</span>
+            <% } %>
+          </td>
+
+          <!-- Note -->
+          <td style="color:var(--muted);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="<%= row.note||'' %>">
+            <%= row.note || '—' %>
+          </td>
+
+          <!-- Added -->
+          <td style="color:var(--muted);font-size:.78rem;white-space:nowrap"><%= row.added %></td>
+
+          <!-- Actions -->
+          <td style="white-space:nowrap">
+            <div class="action-row">
+              <% if (!row.revoked) { %>
+                <button type="button" class="icon-btn icon-btn-info"
+                        title="Gia hạn"
+                        aria-label="Gia hạn"
+                        data-machine-action="renew"
+                        data-mid="<%= row.mid %>">
+                  <i class="bi bi-calendar-plus"></i>
+                </button>
+                <button type="button" class="icon-btn icon-btn-purple"
+                        title="Tạo / đổi license key"
+                        aria-label="Tạo hoặc đổi license key"
+                        data-machine-action="key"
+                        data-mid="<%= row.mid %>"
+                        data-license-key="<%= row.license_key || '' %>">
+                  <i class="bi bi-key"></i>
+                </button>
+                <button type="button" class="icon-btn icon-btn-muted"
+                        title="Transfer"
+                        aria-label="Transfer license"
+                        data-machine-action="transfer"
+                        data-mid="<%= row.mid %>">
+                  <i class="bi bi-arrow-left-right"></i>
+                </button>
+                <form method="POST" action="/revoke" style="display:inline"
+                      onsubmit="return confirm(<%- JSON.stringify(`Thu hồi license của:\n${row.mid}\n\nServer sẽ tắt trong ≤5 phút.`) %>)">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                  <input type="hidden" name="mid" value="<%= row.mid %>">
+                  <button type="submit" class="icon-btn icon-btn-danger" title="Thu hồi license" aria-label="Thu hồi license">
+                    <i class="bi bi-slash-circle"></i>
+                  </button>
+                </form>
+              <% } else { %>
+                <form method="POST" action="/restore" style="display:inline">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                  <input type="hidden" name="mid" value="<%= row.mid %>">
+                  <button type="submit" class="icon-btn icon-btn-success" title="Khôi phục license" aria-label="Khôi phục license">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                </form>
+              <% } %>
+              <form method="POST" action="/delete-machine" style="display:inline"
+                    onsubmit="return confirm(<%- JSON.stringify(`XÓA HOÀN TOÀN machine:\n${row.mid}\n\nWhitelist, agent token, stats và lịch sử active sẽ bị gỡ.\nKhách sẽ phải được cấp lại từ đầu (auto-register sẽ sinh key mới).\n\nTiếp tục?`) %>)">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <input type="hidden" name="mid" value="<%= row.mid %>">
+                <button type="submit" class="icon-btn icon-btn-danger" title="Xóa machine khỏi hệ thống" aria-label="Xóa machine khỏi hệ thống">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+              <a href="/history?mid=<%= encodeURIComponent(row.mid) %>"
+                 class="icon-btn icon-btn-muted"
+                 title="Xem lịch sử" aria-label="Xem lịch sử"><i class="bi bi-clock-history"></i></a>
+              <a href="/machine/<%= encodeURIComponent(row.mid) %>"
+                 class="icon-btn icon-btn-success"
+                 title="SSH / Server control" aria-label="SSH / Server control"><i class="bi bi-terminal"></i></a>
+            </div>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    </div>
+    <% } %>
+  </div>
+</div>
+
+<!-- ── Modal cấp license mới ──────────────────────────────────────────────── -->
+<div class="overlay" id="addOverlay">
+  <div class="modal-box">
+    <h5>
+      <i class="bi bi-plus-circle" style="color:var(--primary)"></i>
+      Cấp license mới
+    </h5>
+    <form method="POST" action="/add" id="addForm">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+
+      <% if (plans && plans.length) { %>
+      <div class="form-group">
+        <label>Áp dụng plan có sẵn (tùy chọn)</label>
+        <select id="planPick" style="width:100%;background:#161e2e;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.875rem">
+          <option value="">— Không dùng plan —</option>
+          <% plans.forEach(function(p) { %>
+            <option value="<%= p.id %>"
+                    data-tier="<%= p.tier %>"
+                    data-max="<%= p.max_players %>"
+                    data-trial="<%= p.trial_days || 0 %>"
+                    data-expdays="<%= p.expires_days || 0 %>"
+                    data-note="<%= p.note || '' %>"><%= p.name %> · <%= TIERS[p.tier].label %></option>
+          <% }) %>
+        </select>
+        <div class="hint">Chọn plan để tự fill các trường bên dưới</div>
+      </div>
+      <% } %>
+
+      <div class="form-group">
+        <label>Machine ID <span style="color:#f87171">*</span></label>
+        <input name="mid" placeholder="aa:bb:cc:dd:ee:ff|hostname" required autofocus>
+        <div class="hint">Lấy từ stderr khi gs khởi động lần đầu</div>
+      </div>
+
+      <!-- Tier selector -->
+      <div class="form-group">
+        <label>Tier</label>
+        <div class="tier-grid" id="tierGrid">
+          <label class="tier-opt selected" data-tier="trial">
+            <input type="radio" name="tier" value="trial" checked>
+            <div class="tier-label" style="color:#fbbf24">Trial</div>
+            <div class="tier-sub">Dùng thử có giới hạn ngày</div>
+          </label>
+          <label class="tier-opt" data-tier="basic">
+            <input type="radio" name="tier" value="basic">
+            <div class="tier-label" style="color:#60a5fa">Basic</div>
+            <div class="tier-sub">Gói cơ bản</div>
+          </label>
+          <label class="tier-opt" data-tier="pro">
+            <input type="radio" name="tier" value="pro">
+            <div class="tier-label" style="color:#a78bfa">Pro</div>
+            <div class="tier-sub">Gói chuyên nghiệp</div>
+          </label>
+          <label class="tier-opt" data-tier="unlimited">
+            <input type="radio" name="tier" value="unlimited">
+            <div class="tier-label" style="color:#34d399">Unlimited</div>
+            <div class="tier-sub">Không giới hạn player</div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Trial days — chỉ hiển thị khi chọn Trial -->
+      <div class="form-group trial-only" id="trialDaysRow">
+        <label>Số ngày dùng thử</label>
+        <input name="trial_days" type="number" value="7" min="1" max="365">
+        <div class="hint">License tự hết hạn sau N ngày kể từ lúc cấp</div>
+      </div>
+
+      <!-- Max players (ẩn khi unlimited) -->
+      <div class="form-group" id="maxPlayersRow">
+        <label>Số player tối đa</label>
+        <input name="max_players" type="number" value="20" min="1" max="9999">
+        <div class="hint">Vượt giới hạn này → server tự tắt trong ≤5 phút</div>
+      </div>
+
+      <!-- Expires at (tùy chọn) -->
+      <div class="form-group">
+        <label>Ngày hết hạn (tùy chọn)</label>
+        <input name="expires_at" type="date">
+        <div class="hint">Để trống = không hết hạn theo ngày cố định</div>
+      </div>
+
+      <!-- License key generation -->
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:.85rem;color:var(--text);font-weight:500">
+          <input type="checkbox" name="gen_key" value="1" checked
+                 style="width:auto;margin:0">
+          Tạo License Key (HEX 32 chars)
+        </label>
+        <div class="hint">Server chỉ chấp nhận AUTH khi client gửi đúng key này</div>
+      </div>
+
+      <!-- IP whitelist -->
+      <div class="form-group">
+        <label>IP whitelist (tùy chọn)</label>
+        <input name="allowed_ips" placeholder="VD: 1.2.3.4, 10.0.0.* (mỗi IP cách nhau , hoặc xuống dòng)">
+        <div class="hint">Hỗ trợ wildcard <code>1.2.3.*</code>. Để trống = chấp nhận mọi IP</div>
+      </div>
+
+      <div class="form-group">
+        <label>Ghi chú</label>
+        <input name="note" placeholder="VD: Anh Tuấn — thử nghiệm tháng 1/2025">
+      </div>
+
+      <div class="modal-footer-btns">
+        <button type="button" class="btn-cancel" data-modal-close="addOverlay">Hủy</button>
+        <button type="submit" class="btn-submit">
+          <i class="bi bi-check-lg me-1"></i>Cấp phép
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Modal Renew (gia hạn) ──────────────────────────────────────────────── -->
+<div class="overlay" id="renewOverlay">
+  <div class="modal-box" style="width:420px">
+    <h5><i class="bi bi-calendar-plus" style="color:#0e7490"></i>Gia hạn license</h5>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
+      Cộng thêm số ngày vào ngày hết hạn của <code id="renewMidLabel"></code>.
+      Nếu license đã hết hạn, tính từ hôm nay.
+    </p>
+    <form method="POST" action="/renew">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <input type="hidden" name="mid" id="renewMid">
+      <div class="form-group">
+        <label>Số ngày gia hạn</label>
+        <input name="days" type="number" value="30" min="1" max="3650" required>
+        <div class="hint">Phổ biến: 7, 30, 90, 180, 365</div>
+      </div>
+      <div class="modal-footer-btns">
+        <button type="button" class="btn-cancel" data-modal-close="renewOverlay">Hủy</button>
+        <button type="submit" class="btn-submit" style="background:#0e7490">
+          <i class="bi bi-check-lg me-1"></i>Gia hạn
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Modal Gen-Key ──────────────────────────────────────────────────────── -->
+<div class="overlay" id="keyOverlay">
+  <div class="modal-box" style="width:440px">
+    <h5><i class="bi bi-key" style="color:#7c3aed"></i>License Key</h5>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
+      Machine: <code id="keyMidLabel"></code>
+    </p>
+    <div style="background:#161e2e;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+      <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Key hiện tại</div>
+      <div style="font-family:monospace;font-size:.85rem;word-break:break-all" id="keyCurrent">—</div>
+    </div>
+    <p style="font-size:.82rem;color:#fbbf24;margin-bottom:14px">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      Tạo key mới sẽ <b>vô hiệu hóa key cũ ngay lập tức</b>. Server đang dùng key cũ sẽ bị từ chối ở lần AUTH tiếp theo.
+    </p>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button type="button" class="btn-cancel" data-modal-close="keyOverlay">Đóng</button>
+      <form method="POST" action="/remove-key" style="display:inline"
+            onsubmit="return confirm('Xóa key — server sẽ AUTH được không cần key. Tiếp tục?')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <input type="hidden" name="mid" id="keyMidRemove" value="">
+        <button type="submit" class="btn-submit" style="background:#991b1b">Xóa key</button>
+      </form>
+      <form method="POST" action="/gen-key" style="display:inline"
+            onsubmit="document.getElementById('keyMidRemove').value = document.getElementById('keyMid').value;">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <input type="hidden" name="mid" id="keyMid">
+        <button type="submit" class="btn-submit" style="background:#7c3aed">
+          <i class="bi bi-arrow-repeat me-1"></i>Tạo key mới
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Transfer ─────────────────────────────────────────────────────── -->
+<div class="overlay" id="transferOverlay">
+  <div class="modal-box" style="width:460px">
+    <h5><i class="bi bi-arrow-left-right" style="color:#475569"></i>Transfer license</h5>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
+      Chuyển license sang Machine ID khác (khi khách thay máy / thay MAC).
+      Tier, max_players, key, hạn dùng — đều giữ nguyên. Stats và history cũng được di chuyển.
+    </p>
+    <form method="POST" action="/transfer"
+          onsubmit="return confirm('Transfer license sang Machine ID mới?\nMachine cũ sẽ bị xóa.')">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <input type="hidden" name="old_mid" id="transferOldMid">
+      <div class="form-group">
+        <label>Từ (Machine ID cũ)</label>
+        <div style="background:#161e2e;border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:monospace;font-size:.85rem;color:#a5b4fc"
+             id="transferOldLabel"></div>
+      </div>
+      <div class="form-group">
+        <label>Đến (Machine ID mới) <span style="color:#f87171">*</span></label>
+        <input name="new_mid" placeholder="aa:bb:cc:dd:ee:ff|new-host" required>
+        <div class="hint">Chưa được tồn tại trong hệ thống</div>
+      </div>
+      <div class="modal-footer-btns">
+        <button type="button" class="btn-cancel" data-modal-close="transferOverlay">Hủy</button>
+        <button type="submit" class="btn-submit" style="background:#475569">
+          <i class="bi bi-arrow-right me-1"></i>Transfer
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  // Tier selector logic
+  const tierOpts = document.querySelectorAll('.tier-opt');
+  const trialRow = document.getElementById('trialDaysRow');
+  const maxRow   = document.getElementById('maxPlayersRow');
+
+  function updateTierUI(tier) {
+    tierOpts.forEach(o => o.classList.toggle('selected', o.dataset.tier === tier));
+    trialRow.style.display = tier === 'trial'     ? 'block' : 'none';
+    maxRow.style.display   = tier === 'unlimited' ? 'none'  : 'block';
+  }
+
+  tierOpts.forEach(opt => {
+    opt.addEventListener('click', () => {
+      const tier = opt.dataset.tier;
+      opt.querySelector('input[type=radio]').checked = true;
+      updateTierUI(tier);
+    });
+  });
+
+  // Init on load
+  updateTierUI('trial');
+
+  // ── Plan picker → fill form ─────────────────────────────────────────────
+  const planSel = document.getElementById('planPick');
+  if (planSel) {
+    planSel.addEventListener('change', () => {
+      const opt = planSel.selectedOptions[0];
+      if (!opt || !opt.value) return;
+      const tier = opt.dataset.tier;
+      const form = document.getElementById('addForm');
+      form.querySelector(`input[name=tier][value="${tier}"]`).checked = true;
+      updateTierUI(tier);
+      if (opt.dataset.max)   form.querySelector('input[name=max_players]').value = opt.dataset.max;
+      if (opt.dataset.trial && tier === 'trial')
+        form.querySelector('input[name=trial_days]').value = opt.dataset.trial;
+      const expDays = parseInt(opt.dataset.expdays);
+      if (expDays > 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + expDays);
+        form.querySelector('input[name=expires_at]').value = d.toISOString().slice(0, 10);
+      }
+      if (opt.dataset.note)  form.querySelector('input[name=note]').value = opt.dataset.note;
+    });
+  }
+
+  // ── Modal helpers ──────────────────────────────────────────────────────
+  const showOverlay = id => document.getElementById(id)?.classList.add('show');
+  const hideOverlay = id => document.getElementById(id)?.classList.remove('show');
+
+  const machineActions = {
+    renew(btn) {
+      const mid = btn.dataset.mid || '';
+      document.getElementById('renewMid').value = mid;
+      document.getElementById('renewMidLabel').textContent = mid;
+      showOverlay('renewOverlay');
+    },
+    key(btn) {
+      const mid = btn.dataset.mid || '';
+      const currentKey = btn.dataset.licenseKey || '';
+      document.getElementById('keyMid').value = mid;
+      document.getElementById('keyMidRemove').value = mid;
+      document.getElementById('keyMidLabel').textContent = mid;
+      const cur = document.getElementById('keyCurrent');
+      cur.textContent = currentKey || '— chưa có key —';
+      cur.style.color = currentKey ? '#a5b4fc' : 'var(--muted)';
+      showOverlay('keyOverlay');
+    },
+    transfer(btn) {
+      const mid = btn.dataset.mid || '';
+      document.getElementById('transferOldMid').value = mid;
+      document.getElementById('transferOldLabel').textContent = mid;
+      showOverlay('transferOverlay');
+    },
+  };
+
+  document.addEventListener('click', event => {
+    const actionBtn = event.target.closest('[data-machine-action]');
+    if (actionBtn) {
+      event.preventDefault();
+      const handler = machineActions[actionBtn.dataset.machineAction];
+      if (handler) handler(actionBtn);
+      return;
+    }
+
+    const opener = event.target.closest('[data-modal-open]');
+    if (opener) {
+      event.preventDefault();
+      showOverlay(opener.dataset.modalOpen);
+      return;
+    }
+
+    const closer = event.target.closest('[data-modal-close]');
+    if (closer) {
+      event.preventDefault();
+      hideOverlay(closer.dataset.modalClose);
+    }
+  });
+
+  document.querySelectorAll('.overlay').forEach(ov => {
+    ov.addEventListener('click', e => { if (e.target === ov) hideOverlay(ov.id); });
+  });
+</script>
+</body>
+</html>
