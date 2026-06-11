@@ -13,7 +13,7 @@ module.exports = {
 
         LICENSE_WEB_USER: "cuongdt",
         LICENSE_WEB_PASS: "chemgiovn@123pP",
-        LICENSE_SESSION_SECRET: "DoiChuoiRandomThatDai_64_ky_tu_tro_len"
+        LICENSE_SESSION_SECRET: "9f4f305143fe63935dc35d2c2fb6f56add030216dfb8a63ee208fe50874b5b7a"
       }
     }
   ]
