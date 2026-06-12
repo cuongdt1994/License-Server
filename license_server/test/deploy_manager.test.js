@@ -4,23 +4,35 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createDeployManager } = require('../deploy_manager');
+const { createDeployManager, resolveDefaultPm2Command } = require('../deploy_manager');
 
 function tmpFile() {
     return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'license-deploy-history-')), 'history.json');
 }
 
 (async () => {
+    {
+        const originalExistsSync = fs.existsSync;
+        fs.existsSync = file => file === '/usr/bin/pm2';
+        try {
+            assert.equal(resolveDefaultPm2Command({}, 'linux'), '/usr/bin/pm2');
+        } finally {
+            fs.existsSync = originalExistsSync;
+        }
+        assert.equal(resolveDefaultPm2Command({ PM2_CMD: '/opt/pm2/bin/pm2' }, 'linux'), '/opt/pm2/bin/pm2');
+    }
+
     const commands = [];
     const outputs = {
         'git rev-parse --short HEAD': ['abc111', 'def222'],
         'git pull --ff-only': ['Updating abc111..def222\nFast-forward'],
         'git log -1 --pretty=format:%h %ci %s': ['def222 2026-06-12 01:00:00 +0700 Add feature'],
-        'npm.cmd run pm2:restart': ['pm2 restarted'],
+        'C:\\pm2\\pm2.cmd restart all --update-env': ['pm2 restarted'],
     };
     const manager = createDeployManager({
         cwd: 'C:\\app',
         npmBin: 'C:\\node\\npm.cmd',
+        pm2Bin: 'C:\\pm2\\pm2.cmd',
         runCommand: async (cmd, args) => {
             const key = [cmd].concat(args).join(' ');
             commands.push([cmd, args]);
@@ -32,12 +44,12 @@ function tmpFile() {
 
     const result = await manager.runUpdate();
     assert.equal(result.ok, true);
-    assert.deepEqual(commands.map(([cmd]) => cmd), ['git', 'git', 'git', 'git', 'C:\\node\\npm.cmd']);
+    assert.deepEqual(commands.map(([cmd]) => cmd), ['git', 'git', 'git', 'git', 'C:\\pm2\\pm2.cmd']);
     assert.deepEqual(commands[0][1], ['rev-parse', '--short', 'HEAD']);
     assert.deepEqual(commands[1][1], ['pull', '--ff-only']);
     assert.deepEqual(commands[2][1], ['rev-parse', '--short', 'HEAD']);
     assert.deepEqual(commands[3][1], ['log', '-1', '--pretty=format:%h %ci %s']);
-    assert.deepEqual(commands[4][1], ['run', 'pm2:restart']);
+    assert.deepEqual(commands[4][1], ['restart', 'all', '--update-env']);
     assert.equal(result.beforeCommit, 'abc111');
     assert.equal(result.afterCommit, 'def222');
     assert.equal(result.changed, true);
@@ -69,6 +81,7 @@ function tmpFile() {
     const rollback = createDeployManager({
         cwd: 'C:\\app',
         npmBin: 'C:\\node\\npm.cmd',
+        pm2Bin: 'C:\\pm2\\pm2.cmd',
         historyFile: tmpFile(),
         runCommand: async (cmd, args) => {
             rollbackCommands.push([cmd, args]);
@@ -79,7 +92,41 @@ function tmpFile() {
     const rollbackResult = await rollback.rollbackLast();
     assert.equal(rollbackResult.ok, true);
     assert.deepEqual(rollbackCommands[0], ['git', ['reset', '--hard', 'abc111']]);
-    assert.deepEqual(rollbackCommands[1], ['C:\\node\\npm.cmd', ['run', 'pm2:restart']]);
+    assert.deepEqual(rollbackCommands[1], ['C:\\pm2\\pm2.cmd', ['restart', 'all', '--update-env']]);
+
+    const missingPm2 = createDeployManager({
+        cwd: 'C:\\app',
+        pm2Bin: 'missing-pm2.cmd',
+        historyFile: tmpFile(),
+        runCommand: async (cmd, args) => {
+            const key = [cmd].concat(args).join(' ');
+            if (key === 'git rev-parse --short HEAD') return { code: 0, stdout: 'abc111', stderr: '' };
+            if (key === 'git pull --ff-only') return { code: 0, stdout: 'Already up to date.', stderr: '' };
+            if (key === 'git log -1 --pretty=format:%h %ci %s') return { code: 0, stdout: 'abc111 summary', stderr: '' };
+            if (key === 'missing-pm2.cmd restart all --update-env') {
+                return { code: 1, stdout: '', stderr: "'missing-pm2.cmd' is not recognized" };
+            }
+            return { code: 0, stdout: 'abc111', stderr: '' };
+        },
+    });
+    const missingResult = await missingPm2.runUpdate();
+    assert.equal(missingResult.ok, false);
+    assert.match(missingResult.steps.at(-1).stderr, /Không tìm thấy PM2/);
+
+    const restartCommands = [];
+    const restartOnly = createDeployManager({
+        cwd: 'C:\\app',
+        pm2Bin: 'C:\\pm2\\pm2.cmd',
+        historyFile: tmpFile(),
+        runCommand: async (cmd, args) => {
+            restartCommands.push([cmd, args]);
+            return { code: 0, stdout: 'pm2 restarted', stderr: '' };
+        },
+    });
+    const restartResult = await restartOnly.restartPm2Only();
+    assert.equal(restartResult.ok, true);
+    assert.deepEqual(restartCommands, [['C:\\pm2\\pm2.cmd', ['restart', 'all', '--update-env']]]);
+    assert.equal(restartOnly.status().history[0].type, 'restart');
 
     const historyFile = tmpFile();
     const limited = createDeployManager({ cwd: 'C:\\app', historyFile, runCommand: async () => ({ code: 0, stdout: 'ok', stderr: '' }) });

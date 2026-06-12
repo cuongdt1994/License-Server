@@ -57,10 +57,34 @@ function cleanOutput(value) {
     return String(value || '').trim();
 }
 
+function resolveDefaultPm2Command(env = process.env, platform = process.platform) {
+    if (env.PM2_CMD) return env.PM2_CMD;
+    if (platform === 'win32') {
+        const appDataPm2 = env.APPDATA ? path.join(env.APPDATA, 'npm', 'pm2.cmd') : '';
+        if (appDataPm2 && fs.existsSync(appDataPm2)) return appDataPm2;
+        return 'pm2.cmd';
+    }
+    for (const candidate of ['/usr/bin/pm2', '/usr/local/bin/pm2', '/snap/bin/pm2']) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return 'pm2';
+}
+
+function addPm2MissingHint(step) {
+    const output = `${step.stderr}\n${step.stdout}`;
+    if (!/not recognized|ENOENT|no such file|không.*tìm/i.test(output)) return step;
+    const hint = 'Không tìm thấy PM2. Hãy cài PM2 hoặc set PM2_CMD tới đường dẫn pm2.cmd/pm2 trước khi dùng cập nhật tự động.';
+    return {
+        ...step,
+        stderr: cleanOutput(`${step.stderr}\n${hint}`),
+    };
+}
+
 function createDeployManager(options = {}) {
     const cwd = options.cwd || process.cwd();
     const timeoutMs = options.timeoutMs || 120000;
     const npmBin = options.npmBin || process.env.npm_execpath || (process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\npm.cmd' : '/usr/bin/npm');
+    const pm2Bin = options.pm2Bin || resolveDefaultPm2Command(options.env || process.env, process.platform);
     const historyFile = options.historyFile || path.join(cwd, 'data', 'deploy_history.json');
     const runCommand = options.runCommand || defaultRunCommand(cwd, timeoutMs);
     let running = false;
@@ -140,7 +164,7 @@ function createDeployManager(options = {}) {
             }
 
             if (result.ok) {
-                const step = await runStep('Restart PM2', npmBin, ['run', 'pm2:restart']);
+                const step = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
                 result.steps.push(step);
                 if (step.code !== 0) result.ok = false;
             }
@@ -223,7 +247,7 @@ function createDeployManager(options = {}) {
             if (reset.code !== 0) result.ok = false;
 
             if (result.ok) {
-                const restart = await runStep('Restart PM2', npmBin, ['run', 'pm2:restart']);
+                const restart = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
                 result.steps.push(restart);
                 if (restart.code !== 0) result.ok = false;
             }
@@ -242,4 +266,4 @@ function createDeployManager(options = {}) {
     return { checkForUpdates, rememberResult, rollbackLast, runUpdate, status };
 }
 
-module.exports = { createDeployManager, HISTORY_LIMIT };
+module.exports = { createDeployManager, resolveDefaultPm2Command, HISTORY_LIMIT };
