@@ -14,6 +14,8 @@ assert.ok(!pkg.dependencies['node-cron'], 'node-cron should be removed after rep
 assert.doesNotMatch(server, /require\('node-cron'\)/);
 assert.match(server, /scheduleDailyTask/);
 assert.match(server, /app\.get\('\/operations'/);
+assert.match(server, /app\.post\('\/operations\/update'/);
+assert.match(server, /deployManager\.runUpdate/);
 
 assert.ok(fs.existsSync(operationsPath), 'operations view exists');
 const operations = fs.readFileSync(operationsPath, 'utf8');
@@ -22,6 +24,9 @@ assert.match(operations, /runtime\.pm2/);
 assert.match(operations, /processInfo\.uptime/);
 assert.match(operations, /backupInfo\.count/);
 assert.match(operations, /\/health/);
+assert.match(operations, /Cập nhật từ Git/);
+assert.match(operations, /deployStatus/);
+assert.match(operations, /\/operations\/update/);
 
 assert.match(machines, /id="machineSearch"/);
 assert.match(machines, /data-machine-row/);

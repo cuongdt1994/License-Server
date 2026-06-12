@@ -31,6 +31,7 @@ const {
 const agent     = require('./agent_manager');
 const risk      = require('./risk_manager');
 const commandPolicy = require('./command_policy');
+const { createDeployManager } = require('./deploy_manager');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
 const RUNTIME         = buildRuntimeConfig();
@@ -62,6 +63,7 @@ const DEFAULT_PLAYERS = 5;
 const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
 const MAX_HISTORY     = 1000;
 const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
+const deployManager   = createDeployManager({ cwd: __dirname });
 
 // ── Tier system ───────────────────────────────────────────────────────────────
 const TIERS = {
@@ -1235,11 +1237,25 @@ function operationsSnapshot() {
         dataDirSource: DATA_DIR_INFO.source,
         webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
         tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
+        deployStatus: deployManager.status(),
     };
 }
 
 app.get('/operations', auth, (req, res) => {
     res.render('operations', { ...operationsSnapshot(), flash: consumeFlash(req.session) });
+});
+
+app.post('/operations/update', auth, async (req, res) => {
+    try {
+        const result = await deployManager.runUpdate();
+        audit(req, 'deploy.update', { ok: result.ok });
+        req.session.flash = result.ok
+            ? { type: 'success', msg: 'Đã cập nhật từ Git và restart PM2.' }
+            : { type: 'danger', msg: 'Cập nhật thất bại. Xem chi tiết trong Operations.' };
+    } catch (err) {
+        req.session.flash = { type: 'danger', msg: err.message || 'Không thể chạy cập nhật.' };
+    }
+    res.redirect('/operations');
 });
 
 app.get('/settings', auth, (req, res) => {
