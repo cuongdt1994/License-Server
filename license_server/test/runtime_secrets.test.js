@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ensureRuntimeSecrets } = require('../runtime_secrets');
+const { DEFAULT_TCP_SECRET, ensureRuntimeSecrets } = require('../runtime_secrets');
 
 function tmp() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'license-runtime-secrets-'));
@@ -19,10 +19,11 @@ function tmp() {
 
     assert.equal(first.sessionSecret.length >= 32, true);
     assert.equal(Buffer.byteLength(first.tcpSecret, 'utf8'), 32);
+    assert.equal(first.tcpSecret, DEFAULT_TCP_SECRET);
     assert.equal(first.sessionSecret, second.sessionSecret);
     assert.equal(first.tcpSecret, second.tcpSecret);
     assert.equal(saved.session_secret, first.sessionSecret);
-    assert.equal(saved.tcp_secret, first.tcpSecret);
+    assert.equal(saved.tcp_secret, DEFAULT_TCP_SECRET);
     assert.equal(first.sources.session, 'runtime_secrets.json');
     assert.equal(first.sources.tcp, 'runtime_secrets.json');
 }
