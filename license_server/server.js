@@ -63,7 +63,7 @@ const DEFAULT_PLAYERS = 5;
 const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
 const MAX_HISTORY     = 1000;
 const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
-const deployManager   = createDeployManager({ cwd: __dirname });
+const deployManager   = createDeployManager({ cwd: __dirname, historyFile: path.join(DATA_DIR, 'deploy_history.json') });
 
 // ── Tier system ───────────────────────────────────────────────────────────────
 const TIERS = {
@@ -1254,6 +1254,32 @@ app.post('/operations/update', auth, async (req, res) => {
             : { type: 'danger', msg: 'Cập nhật thất bại. Xem chi tiết trong Operations.' };
     } catch (err) {
         req.session.flash = { type: 'danger', msg: err.message || 'Không thể chạy cập nhật.' };
+    }
+    res.redirect('/operations');
+});
+
+app.post('/operations/check-update', auth, async (req, res) => {
+    try {
+        const result = await deployManager.checkForUpdates();
+        audit(req, 'deploy.check_update', { ok: result.ok, updateAvailable: result.updateAvailable });
+        req.session.flash = result.ok
+            ? { type: 'success', msg: result.updateAvailable ? 'Có bản cập nhật mới trên Git.' : 'Git đang ở bản mới nhất.' }
+            : { type: 'danger', msg: 'Không kiểm tra được update. Xem chi tiết trong Operations.' };
+    } catch (err) {
+        req.session.flash = { type: 'danger', msg: err.message || 'Không thể kiểm tra update.' };
+    }
+    res.redirect('/operations');
+});
+
+app.post('/operations/rollback', auth, async (req, res) => {
+    try {
+        const result = await deployManager.rollbackLast();
+        audit(req, 'deploy.rollback', { ok: result.ok, rollbackTo: result.rollbackTo });
+        req.session.flash = result.ok
+            ? { type: 'success', msg: `Đã rollback về commit ${result.rollbackTo} và restart PM2.` }
+            : { type: 'danger', msg: 'Rollback thất bại. Xem chi tiết trong Operations.' };
+    } catch (err) {
+        req.session.flash = { type: 'danger', msg: err.message || 'Không thể rollback.' };
     }
     res.redirect('/operations');
 });

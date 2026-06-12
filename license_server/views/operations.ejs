@@ -78,6 +78,18 @@
           <i class="bi bi-cloud-arrow-down"></i>Cập nhật từ Git
         </button>
       </form>
+      <form class="deploy-form" method="POST" action="/operations/check-update">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
+          <i class="bi bi-search"></i>Kiểm tra update
+        </button>
+      </form>
+      <form class="deploy-form" method="POST" action="/operations/rollback" onsubmit="return confirm('Rollback về commit trước lần cập nhật thành công gần nhất?')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
+          <i class="bi bi-arrow-counterclockwise"></i>Rollback
+        </button>
+      </form>
       <a class="btn-linkish" href="/health" target="_blank"><i class="bi bi-heart-pulse"></i>Health JSON</a>
       <a class="btn-linkish" href="/logs"><i class="bi bi-terminal"></i>Logs</a>
       <a class="btn-linkish" href="/settings"><i class="bi bi-sliders"></i>Settings</a>
@@ -177,6 +189,18 @@
         <div class="value"><code>Không chạy npm install</code></div>
         <div class="sub">Nếu sau này có thay đổi dependency, nên cập nhật thủ công hoặc bật thêm chế độ cài dependency có xác nhận.</div>
       </div>
+      <% if (deployStatus && deployStatus.last && (deployStatus.last.beforeCommit || deployStatus.last.afterCommit || deployStatus.last.localCommit || deployStatus.last.remoteCommit)) { %>
+        <div class="rowitem">
+          <div class="label">Commit trước</div>
+          <div class="value"><code><%= deployStatus.last.beforeCommit || deployStatus.last.localCommit || 'n/a' %></code></div>
+          <div class="sub">Commit local trước thao tác.</div>
+        </div>
+        <div class="rowitem">
+          <div class="label">Commit sau</div>
+          <div class="value"><code><%= deployStatus.last.afterCommit || deployStatus.last.remoteCommit || 'n/a' %></code></div>
+          <div class="sub"><%= deployStatus.last.gitSummary || deployStatus.last.remoteLog || 'Chưa có log commit.' %></div>
+        </div>
+      <% } %>
     </div>
     <% if (deployStatus && deployStatus.last && deployStatus.last.steps && deployStatus.last.steps.length) { %>
       <div class="deploy-steps">
@@ -189,6 +213,49 @@
             <div class="sub"><code><%= step.command %></code></div>
             <% if (step.stdout || step.stderr) { %>
               <pre class="deploy-log"><%= (step.stdout || step.stderr).slice(-4000) %></pre>
+            <% } %>
+          </div>
+        <% }) %>
+      </div>
+    <% } %>
+    <% if (deployStatus && deployStatus.lastCheck) { %>
+      <div class="deploy-steps">
+        <div class="deploy-step">
+          <div class="deploy-step-head">
+            <strong>Kết quả kiểm tra update</strong>
+            <% if (deployStatus.lastCheck.updateAvailable) { %>
+              <span class="status status-muted">Có update</span>
+            <% } else { %>
+              <span class="status status-ok">Mới nhất</span>
+            <% } %>
+          </div>
+          <div class="sub">Local <code><%= deployStatus.lastCheck.localCommit || 'n/a' %></code> · Remote <code><%= deployStatus.lastCheck.remoteCommit || 'n/a' %></code></div>
+          <% if (deployStatus.lastCheck.remoteLog) { %>
+            <pre class="deploy-log"><%= deployStatus.lastCheck.remoteLog.slice(-4000) %></pre>
+          <% } %>
+        </div>
+      </div>
+    <% } %>
+    <% if (deployStatus && deployStatus.history && deployStatus.history.length) { %>
+      <div class="deploy-steps">
+        <div class="section-title"><i class="bi bi-clock-history"></i>Lịch sử cập nhật</div>
+        <% deployStatus.history.slice(0, 20).forEach(item => { %>
+          <div class="deploy-step">
+            <div class="deploy-step-head">
+              <strong><%= item.type === 'rollback' ? 'Rollback' : 'Cập nhật từ Git' %></strong>
+              <span class="status <%= item.ok ? 'status-ok' : 'status-muted' %>"><%= item.ok ? 'OK' : 'Lỗi' %></span>
+            </div>
+            <div class="sub">
+              <%= item.finishedAt ? new Date(item.finishedAt).toLocaleString('vi-VN') : '' %>
+              <% if (item.beforeCommit || item.afterCommit) { %>
+                · <code><%= item.beforeCommit || 'n/a' %></code> → <code><%= item.afterCommit || 'n/a' %></code>
+              <% } %>
+              <% if (item.rollbackTo) { %>
+                · về <code><%= item.rollbackTo %></code>
+              <% } %>
+            </div>
+            <% if (item.gitSummary) { %>
+              <div class="sub"><%= item.gitSummary %></div>
             <% } %>
           </div>
         <% }) %>

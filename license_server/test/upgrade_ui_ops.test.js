@@ -15,7 +15,11 @@ assert.doesNotMatch(server, /require\('node-cron'\)/);
 assert.match(server, /scheduleDailyTask/);
 assert.match(server, /app\.get\('\/operations'/);
 assert.match(server, /app\.post\('\/operations\/update'/);
+assert.match(server, /app\.post\('\/operations\/check-update'/);
+assert.match(server, /app\.post\('\/operations\/rollback'/);
 assert.match(server, /deployManager\.runUpdate/);
+assert.match(server, /deployManager\.checkForUpdates/);
+assert.match(server, /deployManager\.rollbackLast/);
 
 assert.ok(fs.existsSync(operationsPath), 'operations view exists');
 const operations = fs.readFileSync(operationsPath, 'utf8');
@@ -25,8 +29,15 @@ assert.match(operations, /processInfo\.uptime/);
 assert.match(operations, /backupInfo\.count/);
 assert.match(operations, /\/health/);
 assert.match(operations, /Cập nhật từ Git/);
+assert.match(operations, /Kiểm tra update/);
+assert.match(operations, /Rollback/);
 assert.match(operations, /deployStatus/);
 assert.match(operations, /\/operations\/update/);
+assert.match(operations, /\/operations\/check-update/);
+assert.match(operations, /\/operations\/rollback/);
+assert.match(operations, /Commit trước/);
+assert.match(operations, /Commit sau/);
+assert.match(operations, /Lịch sử cập nhật/);
 assert.match(operations, /Không chạy npm install/);
 
 assert.match(machines, /id="machineSearch"/);
