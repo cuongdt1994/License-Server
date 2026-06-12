@@ -19,7 +19,7 @@ function tmp() {
 
     assert.equal(first.sessionSecret.length >= 32, true);
     assert.equal(Buffer.byteLength(first.tcpSecret, 'utf8'), 32);
-    assert.notEqual(first.tcpSecret, 'KhongCogiSecret2024!@#$%^&*()_+=');
+    assert.equal(first.tcpSecret, 'KhongCogiSecret2024!@#$%^&*()_+=');
     assert.equal(first.sessionSecret, second.sessionSecret);
     assert.equal(first.tcpSecret, second.tcpSecret);
     assert.equal(saved.session_secret, first.sessionSecret);

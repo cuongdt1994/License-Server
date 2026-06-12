@@ -10,6 +10,8 @@ const {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    licenseKeyBootstrapEnabled,
+    canBootstrapLicenseKey,
     canViewPortalLicense,
     auditEvent,
     securityHeaders,
@@ -43,6 +45,20 @@ const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settin
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: true, justRegistered: false }), false);
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: true, justRegistered: true }), true);
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: false, justRegistered: false }), true);
+}
+
+{
+    assert.strictEqual(licenseKeyBootstrapEnabled({}), true);
+    assert.strictEqual(licenseKeyBootstrapEnabled({ LICENSE_KEY_BOOTSTRAP: '0' }), false);
+    assert.strictEqual(licenseKeyBootstrapEnabled({ LICENSE_KEY_BOOTSTRAP: 'false' }), false);
+    assert.strictEqual(licenseKeyBootstrapEnabled({ LICENSE_KEY_BOOTSTRAP: 'off' }), false);
+    assert.strictEqual(licenseKeyBootstrapEnabled({ LICENSE_KEY_BOOTSTRAP: '1' }), true);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: null, justRegistered: false, enabled: true }), true);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: '', justRegistered: false, enabled: true }), true);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: 'WRONG', justRegistered: false, enabled: true }), false);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: null, justRegistered: true, enabled: true }), false);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: '' }, { sentKey: null, justRegistered: false, enabled: true }), false);
+    assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: null, justRegistered: false, enabled: false }), false);
 }
 
 {
@@ -99,12 +115,19 @@ const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settin
 }
 
 {
+    assert.match(serverSource, /function autoRegisterEnabled/);
+    assert.match(serverSource, /LICENSE_AUTO_REGISTER/);
+    assert.doesNotMatch(serverSource, /return \/\^\(1\|true\|yes\|on\)\$\/i\.test\(String\(env\.LICENSE_AUTO_REGISTER/);
+}
+
+{
     assert.match(serverSource, /advanced_shell_enabled === true/);
     assert.doesNotMatch(serverSource, /advanced_shell_enabled !== false/);
     assert.match(settingsView, /settings\.advanced_shell_enabled === true \? 'selected' : ''/);
     assert.doesNotMatch(serverSource, /data_dir:\s*DATA_DIR/);
     assert.doesNotMatch(serverSource, /warnings:\s*RUNTIME\.warnings/);
     assert.match(serverSource, /autoRegisterEnabled\(\)/);
+    assert.match(serverSource, /const needSyncKey = justRegistered\s*\|\| shouldBootstrapKey/);
     assert.match(serverSource, /portalRlCheck/);
     assert.match(serverSource, /Thông tin tra cứu không hợp lệ/);
     assert.doesNotMatch(serverSource, /const AUTO_REGISTER\s*=\s*true/);

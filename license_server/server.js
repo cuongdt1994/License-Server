@@ -20,6 +20,8 @@ const {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    licenseKeyBootstrapEnabled,
+    canBootstrapLicenseKey,
     canViewPortalLicense,
     consumeFlash,
     auditEvent,
@@ -414,7 +416,7 @@ function enqueueAgentCommand(mid, kind, payload) {
 }
 
 function autoRegisterEnabled(env = process.env) {
-    return /^(1|true|yes|on)$/i.test(String(env.LICENSE_AUTO_REGISTER || '').trim());
+    return !/^(0|false|no|off)$/i.test(String(env.LICENSE_AUTO_REGISTER || '').trim());
 }
 
 function csvSafeCell(value) {
@@ -630,19 +632,29 @@ const tcpServer = net.createServer((socket) => {
 
             // License key verification — bỏ qua nếu vừa auto-register (client chưa biết key)
             // Chấp nhận previous_keys trong grace window để client có thời gian đồng bộ key mới
+            let shouldBootstrapKey = false;
             if (entry.license_key && !justRegistered) {
                 const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
                 const validKey = sentKey && (sentKey === entry.license_key
                     || prev.some(p => p && p.key === sentKey
                                        && (!p.expires_at || p.expires_at > Date.now())));
-                if (!validKey) {
+                shouldBootstrapKey = canBootstrapLicenseKey(entry, {
+                    sentKey,
+                    justRegistered,
+                    enabled: licenseKeyBootstrapEnabled(),
+                });
+                if (!validKey && !shouldBootstrapKey) {
                     socket.write(tcpEncrypt('DENY'));
                     log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
                     recordRisk(mid, 'wrong_key', { ip });
                     tcpRlFail(ip); socket.end(); return;
                 }
+                if (shouldBootstrapKey) {
+                    log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
+                    recordRisk(mid, 'key_bootstrap', { ip });
+                }
                 // Key cũ vẫn hợp lệ → gửi key mới xuống client lần này (qua AUTH OK payload bên dưới)
-                if (sentKey !== entry.license_key) {
+                if (!shouldBootstrapKey && sentKey !== entry.license_key) {
                     log('INFO', `AUTH OLD-KEY ${ip}  [${mid}]  → sẽ đồng bộ key mới`);
                 }
             }
@@ -675,10 +687,11 @@ const tcpServer = net.createServer((socket) => {
             // Format response:
             //   OK <max> <hmac>                          → auth thường, không agent
             //   OK <max> <hmac> <agent_token>            → auth thường + agent
-            //   OK <max> <hmac> <new_key>                → auto-register / sync key mới
-            //   OK <max> <hmac> <new_key> <agent_token>  → auto-register / sync key + agent
+            //   OK <max> <hmac> <new_key>                → auto-register / bootstrap / sync key mới
+            //   OK <max> <hmac> <new_key> <agent_token>  → bootstrap / sync key + agent
             // Client phân giải bằng heuristic: license_key = 32 hex, agent token = 48 hex.
             const needSyncKey = justRegistered
+                || shouldBootstrapKey
                 || (entry.license_key && sentKey && sentKey !== entry.license_key);
             let okPayload = `OK ${maxPl} ${token}`;
             if (needSyncKey && entry.license_key) okPayload += ` ${entry.license_key}`;

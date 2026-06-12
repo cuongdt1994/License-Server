@@ -53,10 +53,20 @@ function strictLicenseKeyEnabled(env = process.env) {
     return /^(1|true|yes|on)$/i.test(String(env.STRICT_LICENSE_KEY || '').trim());
 }
 
+function licenseKeyBootstrapEnabled(env = process.env) {
+    return !/^(0|false|no|off)$/i.test(String(env.LICENSE_KEY_BOOTSTRAP || '').trim());
+}
+
 function canAuthWithoutLicenseKey(entry, { strict, justRegistered }) {
     if (justRegistered) return true;
     if (!strict) return true;
     return !!entry?.license_key;
+}
+
+function canBootstrapLicenseKey(entry, { sentKey, justRegistered, enabled }) {
+    if (!enabled || justRegistered) return false;
+    if (!entry?.license_key) return false;
+    return !String(sentKey || '').trim();
 }
 
 function canViewPortalLicense(entry, providedKey) {
@@ -104,6 +114,8 @@ module.exports = {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    licenseKeyBootstrapEnabled,
+    canBootstrapLicenseKey,
     canViewPortalLicense,
     consumeFlash,
     auditEvent,
