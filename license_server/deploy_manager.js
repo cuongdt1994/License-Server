@@ -60,7 +60,7 @@ function cleanOutput(value) {
 function createDeployManager(options = {}) {
     const cwd = options.cwd || process.cwd();
     const timeoutMs = options.timeoutMs || 120000;
-    const npmBin = options.npmBin || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    const npmBin = options.npmBin || process.env.npm_execpath || (process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\npm.cmd' : '/usr/bin/npm');
     const historyFile = options.historyFile || path.join(cwd, 'data', 'deploy_history.json');
     const runCommand = options.runCommand || defaultRunCommand(cwd, timeoutMs);
     let running = false;

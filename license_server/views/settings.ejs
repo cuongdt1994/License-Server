@@ -249,8 +249,8 @@
       <div class="form-group">
         <label>Advanced shell</label>
         <select name="advanced_shell_enabled">
-          <option value="1" <%= settings.advanced_shell_enabled === false ? '' : 'selected' %>>Enabled</option>
-          <option value="0" <%= settings.advanced_shell_enabled === false ? 'selected' : '' %>>Disabled</option>
+          <option value="1" <%= settings.advanced_shell_enabled === true ? 'selected' : '' %>>Enabled</option>
+          <option value="0" <%= settings.advanced_shell_enabled === true ? '' : 'selected' %>>Disabled</option>
         </select>
         <div class="hint">Safe actions continue working even when advanced shell is disabled.</div>
       </div>

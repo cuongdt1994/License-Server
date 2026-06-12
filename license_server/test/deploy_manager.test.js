@@ -20,6 +20,7 @@ function tmpFile() {
     };
     const manager = createDeployManager({
         cwd: 'C:\\app',
+        npmBin: 'C:\\node\\npm.cmd',
         runCommand: async (cmd, args) => {
             const key = [cmd].concat(args).join(' ');
             commands.push([cmd, args]);
@@ -31,7 +32,7 @@ function tmpFile() {
 
     const result = await manager.runUpdate();
     assert.equal(result.ok, true);
-    assert.deepEqual(commands.map(([cmd]) => cmd), ['git', 'git', 'git', 'git', 'npm.cmd']);
+    assert.deepEqual(commands.map(([cmd]) => cmd), ['git', 'git', 'git', 'git', 'C:\\node\\npm.cmd']);
     assert.deepEqual(commands[0][1], ['rev-parse', '--short', 'HEAD']);
     assert.deepEqual(commands[1][1], ['pull', '--ff-only']);
     assert.deepEqual(commands[2][1], ['rev-parse', '--short', 'HEAD']);
@@ -67,6 +68,7 @@ function tmpFile() {
     const rollbackCommands = [];
     const rollback = createDeployManager({
         cwd: 'C:\\app',
+        npmBin: 'C:\\node\\npm.cmd',
         historyFile: tmpFile(),
         runCommand: async (cmd, args) => {
             rollbackCommands.push([cmd, args]);
@@ -77,7 +79,7 @@ function tmpFile() {
     const rollbackResult = await rollback.rollbackLast();
     assert.equal(rollbackResult.ok, true);
     assert.deepEqual(rollbackCommands[0], ['git', ['reset', '--hard', 'abc111']]);
-    assert.deepEqual(rollbackCommands[1], ['npm.cmd', ['run', 'pm2:restart']]);
+    assert.deepEqual(rollbackCommands[1], ['C:\\node\\npm.cmd', ['run', 'pm2:restart']]);
 
     const historyFile = tmpFile();
     const limited = createDeployManager({ cwd: 'C:\\app', historyFile, runCommand: async () => ({ code: 0, stdout: 'ok', stderr: '' }) });

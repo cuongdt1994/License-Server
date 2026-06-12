@@ -4,8 +4,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_TCP_SECRET = 'KhongCogiSecret2024!@#$%^&*()_+=';
-
 function readJson(file) {
     if (!fs.existsSync(file)) return {};
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
@@ -35,7 +33,7 @@ function ensureRuntimeSecrets({ dataDir, env = process.env } = {}) {
         changed = true;
     }
     if (!saved.tcp_secret) {
-        saved.tcp_secret = DEFAULT_TCP_SECRET;
+        saved.tcp_secret = crypto.randomBytes(32).toString('base64url').slice(0, 32);
         changed = true;
     }
     validateTcpSecret(saved.tcp_secret);
@@ -52,4 +50,4 @@ function ensureRuntimeSecrets({ dataDir, env = process.env } = {}) {
     };
 }
 
-module.exports = { DEFAULT_TCP_SECRET, ensureRuntimeSecrets, validateTcpSecret };
+module.exports = { ensureRuntimeSecrets, validateTcpSecret };

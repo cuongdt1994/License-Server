@@ -20,6 +20,7 @@ const {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    canViewPortalLicense,
     consumeFlash,
     auditEvent,
     securityHeaders,
@@ -57,7 +58,6 @@ const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 
-const AUTO_REGISTER   = true;
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
 const DEFAULT_PLAYERS = 5;
 const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
@@ -138,6 +138,21 @@ function rl_fail(ip) {
     if (++e.count >= MAX_ATTEMPTS) { e.lockedUntil = Date.now() + LOCK_MS; e.count = 0; }
 }
 function rl_clear(ip) { delete loginAttempts[ip]; }
+
+const portalAttempts = {};
+const PORTAL_MAX_ATTEMPTS = 20, PORTAL_LOCK_MS = 10 * 60 * 1000;
+function portalRlCheck(ip) {
+    const e = portalAttempts[ip];
+    if (e && e.lockedUntil > Date.now()) return { blocked: true };
+    return { blocked: false };
+}
+function portalRlFail(ip) {
+    if (!portalAttempts[ip]) portalAttempts[ip] = { count: 0, lockedUntil: 0 };
+    const e = portalAttempts[ip];
+    if (e.lockedUntil && e.lockedUntil < Date.now()) { e.count = 0; e.lockedUntil = 0; }
+    if (++e.count >= PORTAL_MAX_ATTEMPTS) { e.lockedUntil = Date.now() + PORTAL_LOCK_MS; e.count = 0; }
+}
+function portalRlClear(ip) { delete portalAttempts[ip]; }
 
 // ── TCP Rate limiting per IP ──────────────────────────────────────────────────
 const tcpAttempts = {};
@@ -385,7 +400,7 @@ function recordRisk(mid, type, details = {}) {
 }
 
 function shellEnabled() {
-    return loadSettings().advanced_shell_enabled !== false;
+    return loadSettings().advanced_shell_enabled === true;
 }
 
 function defaultShellTimeout() {
@@ -396,6 +411,15 @@ function enqueueAgentCommand(mid, kind, payload) {
     const timeoutSec = commandPolicy.clampTimeout(payload?.timeoutSec, 300);
     const script = commandPolicy.wrapWithTimeout(payload?.script || '', timeoutSec);
     return agent.enqueueCommand(mid, kind, { ...payload, script, timeoutSec });
+}
+
+function autoRegisterEnabled(env = process.env) {
+    return /^(1|true|yes|on)$/i.test(String(env.LICENSE_AUTO_REGISTER || '').trim());
+}
+
+function csvSafeCell(value) {
+    const text = String(value ?? '');
+    return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
 }
 
 // ── Maintenance mode (persistent via settings) ────────────────────────────────
@@ -569,7 +593,7 @@ const tcpServer = net.createServer((socket) => {
             let justRegistered = false;
 
             if (!entry) {
-                if (!AUTO_REGISTER) {
+                if (!autoRegisterEnabled()) {
                     socket.write(tcpEncrypt('DENY'));
                     log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (not registered)`);
                     tcpRlFail(ip); socket.end(); return;
@@ -744,9 +768,7 @@ const tcpServer = net.createServer((socket) => {
 
             // Trả về "OK <max>" và kèm "KEY:<key>" nếu có để client tự đồng bộ license.key
             // Client sẽ ghi đè ./license.key khi phát hiện key khác key đang dùng.
-            let hbPayload = `OK ${maxPl}`;
-            if (entry.license_key) hbPayload += ` KEY:${entry.license_key}`;
-            socket.write(tcpEncrypt(hbPayload));
+            socket.write(tcpEncrypt(`OK ${maxPl}`));
             active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
             wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl });
             log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}`);
@@ -933,7 +955,8 @@ app.post('/login', (req, res) => {
     log('WARNING', `LOGIN FAIL  ip=${ip}  (${left} left)`);
     res.render('login', { error: `Sai tài khoản hoặc mật khẩu. Còn ${left} lần thử.` });
 });
-app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
+app.get('/logout', auth, (req, res) => res.render('logout', { flash: null }));
+app.post('/logout', auth, (req, res) => { req.session.destroy(); res.redirect('/login'); });
 
 // ── 2FA ───────────────────────────────────────────────────────────────────────
 app.get('/verify-2fa', (req, res) => {
@@ -1422,16 +1445,28 @@ app.get('/logs', auth, (req, res) => {
 // ── Portal (self-service khách hàng) ─────────────────────────────────────────
 app.get('/portal', (req, res) => res.render('portal', { result: null, error: null }));
 app.post('/portal', (req, res) => {
+    const ip = clientIp(req);
+    const genericPortalError = 'Thông tin tra cứu không hợp lệ.';
+    if (portalRlCheck(ip).blocked) {
+        return res.render('portal', { result: null, error: 'Thử quá nhiều lần. Vui lòng quay lại sau.' });
+    }
     const mid = (req.body.mid || '').trim();
     const key = (req.body.key || '').trim();
     const db  = loadDB();
     const entry = db[mid];
-    if (!entry) return res.render('portal', { result: null, error: 'Machine ID không tồn tại.' });
-    if (STRICT_LICENSE_KEY && !entry.license_key) {
-        return res.render('portal', { result: null, error: 'Machine này chưa có license key hợp lệ.' });
+    if (!entry) {
+        portalRlFail(ip);
+        return res.render('portal', { result: null, error: genericPortalError });
     }
-    if (entry.license_key && key !== entry.license_key)
-        return res.render('portal', { result: null, error: 'License key không đúng.' });
+    if (!entry.license_key) {
+        portalRlFail(ip);
+        return res.render('portal', { result: null, error: genericPortalError });
+    }
+    if (!canViewPortalLicense(entry, key)) {
+        portalRlFail(ip);
+        return res.render('portal', { result: null, error: genericPortalError });
+    }
+    portalRlClear(ip);
     const info = {
         mid, tier: entry.tier || 'basic', max_players: entry.max_players,
         revoked: entry.revoked, expired: isExpired(entry),
@@ -1450,16 +1485,10 @@ app.get('/health', (req, res) => {
         uptime: Math.floor(process.uptime()),
         runtime: {
             node_env: RUNTIME.nodeEnv,
-            bind_host: BIND_HOST,
             web_port: WEB_PORT,
             tcp_port: TCP_PORT,
-            data_dir: DATA_DIR,
-            data_dir_source: DATA_DIR_INFO.source,
             pm2: RUNTIME.pm2,
-            warnings: RUNTIME.warnings,
         },
-        machines_total: Object.keys(loadDB()).length,
-        machines_online: Object.keys(active).length,
         maintenance: isMaintenanceActive(), ts: Date.now(),
     });
 });
@@ -1472,7 +1501,7 @@ app.get('/export/csv', auth, (req, res) => {
         [mid, e.tier || 'basic', e.max_players || 0, e.peak_players || 0,
          e.note || '', e.added || '', e.expires_at || '',
          e.revoked ? 'yes' : 'no', isExpired(e) ? 'yes' : 'no', e.license_key || '']
-        .map(v => `"${String(v).replace(/"/g, '""')}"`)
+        .map(v => `"${csvSafeCell(v).replace(/"/g, '""')}"`)
         .join(',')
     ).join('\n');
     res.setHeader('Content-Type', 'text/csv');
@@ -1522,7 +1551,7 @@ app.get('/machine/:mid', auth, (req, res) => {
         riskSummary: risk.summarize(RISK_FILE, mid),
         riskEvents: risk.listEvents(RISK_FILE, mid).slice(-15).reverse(),
         safeActions: commandPolicy.getSafeActions(),
-        shellEnabled: settings.advanced_shell_enabled !== false,
+        shellEnabled: settings.advanced_shell_enabled === true,
         shellTimeout: commandPolicy.clampTimeout(settings.agent_shell_timeout || 120, 120),
         publicBase: req.protocol + '://' + req.get('host'),
         expiry: expiryInfo(entry), expired: isExpired(entry),
@@ -1763,7 +1792,14 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
 // ── HTTP upgrade: chỉ còn dashboard /ws ─────────────────────────────────────
 httpServer.on('upgrade', (req, sock, head) => {
     if ((req.url || '') === '/ws') {
-        wss.handleUpgrade(req, sock, head, (ws) => wss.emit('connection', ws, req));
+        sessionParser(req, {}, () => {
+            if (!req.session?.loggedIn) {
+                sock.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+                sock.destroy();
+                return;
+            }
+            wss.handleUpgrade(req, sock, head, (ws) => wss.emit('connection', ws, req));
+        });
     } else {
         sock.destroy();
     }

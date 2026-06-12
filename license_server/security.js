@@ -59,6 +59,12 @@ function canAuthWithoutLicenseKey(entry, { strict, justRegistered }) {
     return !!entry?.license_key;
 }
 
+function canViewPortalLicense(entry, providedKey) {
+    const stored = String(entry?.license_key || '').trim();
+    const provided = String(providedKey || '').trim();
+    return !!stored && !!provided && safeEqual(stored, provided);
+}
+
 function consumeFlash(session) {
     if (!session || !session.flash) return null;
     const flash = session.flash;
@@ -98,6 +104,7 @@ module.exports = {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    canViewPortalLicense,
     consumeFlash,
     auditEvent,
     securityHeaders,

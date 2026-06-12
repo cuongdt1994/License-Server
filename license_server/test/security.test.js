@@ -10,6 +10,7 @@ const {
     verifyCsrfRequest,
     strictLicenseKeyEnabled,
     canAuthWithoutLicenseKey,
+    canViewPortalLicense,
     auditEvent,
     securityHeaders,
     isAgentScriptAuthorized,
@@ -18,6 +19,9 @@ const {
     verifyPassword,
     normalizeAdminCredentials,
 } = require('../security');
+
+const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settings.ejs'), 'utf8');
 
 {
     const session = {};
@@ -39,6 +43,13 @@ const {
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: true, justRegistered: false }), false);
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: true, justRegistered: true }), true);
     assert.strictEqual(canAuthWithoutLicenseKey({}, { strict: false, justRegistered: false }), true);
+}
+
+{
+    assert.strictEqual(canViewPortalLicense({ license_key: 'ABC123' }, 'ABC123'), true);
+    assert.strictEqual(canViewPortalLicense({ license_key: 'ABC123' }, 'wrong'), false);
+    assert.strictEqual(canViewPortalLicense({}, ''), false);
+    assert.strictEqual(canViewPortalLicense(null, 'ABC123'), false);
 }
 
 {
@@ -85,6 +96,25 @@ const {
     assert.ok(normalized.pass_hash);
     assert.strictEqual(normalized.pass, undefined);
     assert.strictEqual(verifyPassword('legacy-plain', normalized.pass_hash), true);
+}
+
+{
+    assert.match(serverSource, /advanced_shell_enabled === true/);
+    assert.doesNotMatch(serverSource, /advanced_shell_enabled !== false/);
+    assert.match(settingsView, /settings\.advanced_shell_enabled === true \? 'selected' : ''/);
+    assert.doesNotMatch(serverSource, /data_dir:\s*DATA_DIR/);
+    assert.doesNotMatch(serverSource, /warnings:\s*RUNTIME\.warnings/);
+    assert.match(serverSource, /autoRegisterEnabled\(\)/);
+    assert.match(serverSource, /portalRlCheck/);
+    assert.match(serverSource, /Thông tin tra cứu không hợp lệ/);
+    assert.doesNotMatch(serverSource, /const AUTO_REGISTER\s*=\s*true/);
+    assert.doesNotMatch(serverSource, /KEY:\$\{entry\.license_key\}/);
+    assert.match(serverSource, /csvSafeCell/);
+    assert.match(serverSource, /sessionParser\(req, \{\}, \(\) =>/);
+    assert.match(serverSource, /req\.session\?\.loggedIn/);
+    const logoutGetLine = serverSource.split('\n').find(line => line.includes("app.get('/logout'")) || '';
+    assert.doesNotMatch(logoutGetLine, /req\.session\.destroy/);
+    assert.match(serverSource, /app\.post\('\/logout'/);
 }
 
 console.log('security tests passed');
