@@ -14,6 +14,7 @@ const QRCode    = require('qrcode');
 const { resolveDataDirInfo, rememberDataDir } = require('./data_dir');
 const { buildRuntimeConfig } = require('./runtime_config');
 const { ensureRuntimeSecrets } = require('./runtime_secrets');
+const { FileSessionStore } = require('./session_store');
 const {
     ensureCsrfToken,
     verifyCsrfRequest,
@@ -51,6 +52,7 @@ const SETTINGS_FILE   = path.join(DATA_DIR, 'settings.json');
 const ADMIN_FILE      = path.join(DATA_DIR, 'admin.json');
 const RISK_FILE       = path.join(DATA_DIR, 'risk_events.json');
 const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
+const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 
@@ -785,6 +787,7 @@ function clientIp(req) {
     return (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
 }
 const sessionParser = session({
+    store: new FileSessionStore({ dir: SESSION_DIR, ttlMs: 8 * 60 * 60 * 1000 }),
     secret: RUNTIME_SECRETS.sessionSecret,
     resave: false, saveUninitialized: false,
     cookie: {
