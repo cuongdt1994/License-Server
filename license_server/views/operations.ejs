@@ -39,6 +39,11 @@
     .section-title { display:flex; align-items:center; gap:8px; font-weight:800; margin-bottom:14px; }
     .runtime-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     .rowitem { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; min-width:0; }
+    .deploy-steps { display:grid; gap:10px; margin-top:12px; }
+    .deploy-step { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
+    .deploy-step-head { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+    .deploy-log { margin:10px 0 0; max-height:150px; overflow:auto; white-space:pre-wrap; color:#d1d5db; font-size:.78rem; background:#0f172a; border:1px solid var(--border); border-radius:6px; padding:10px; }
+    .deploy-form { margin:0; }
     @media (max-width: 900px) { .grid, .runtime-grid { grid-template-columns:1fr 1fr; } }
     @media (max-width: 560px) { .grid, .runtime-grid { grid-template-columns:1fr; } .page { padding:18px; } }
   </style>
@@ -67,6 +72,12 @@
       <div class="page-sub">PM2, sức khỏe tiến trình, lưu trữ và backup ở cùng một nơi.</div>
     </div>
     <div class="actions">
+      <form class="deploy-form" method="POST" action="/operations/update" onsubmit="return confirm('Cập nhật code từ Git và restart PM2 ngay bây giờ?')">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
+          <i class="bi bi-cloud-arrow-down"></i>Cập nhật từ Git
+        </button>
+      </form>
       <a class="btn-linkish" href="/health" target="_blank"><i class="bi bi-heart-pulse"></i>Health JSON</a>
       <a class="btn-linkish" href="/logs"><i class="bi bi-terminal"></i>Logs</a>
       <a class="btn-linkish" href="/settings"><i class="bi bi-sliders"></i>Settings</a>
@@ -137,6 +148,52 @@
         <div class="value"><code><%= runtime.nodeEnv %></code></div>
       </div>
     </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title"><i class="bi bi-cloud-arrow-down"></i>Cập nhật từ Git</div>
+    <div class="runtime-grid">
+      <div class="rowitem">
+        <div class="label">Trạng thái</div>
+        <% if (deployStatus && deployStatus.running) { %>
+          <div class="value"><span class="status status-muted"><i class="bi bi-arrow-repeat"></i>Đang chạy</span></div>
+          <div class="sub">Vui lòng chờ tiến trình hiện tại hoàn tất.</div>
+        <% } else if (deployStatus && deployStatus.last) { %>
+          <div class="value">
+            <% if (deployStatus.last.ok) { %>
+              <span class="status status-ok"><i class="bi bi-check-circle-fill"></i>Thành công</span>
+            <% } else { %>
+              <span class="status status-muted"><i class="bi bi-exclamation-triangle"></i>Có lỗi</span>
+            <% } %>
+          </div>
+          <div class="sub">Lần cuối: <%= new Date(deployStatus.last.finishedAt || deployStatus.last.startedAt).toLocaleString('vi-VN') %></div>
+        <% } else { %>
+          <div class="value"><span class="status status-muted"><i class="bi bi-clock"></i>Chưa chạy</span></div>
+          <div class="sub">Quy trình hiện tại: <code>git pull --ff-only</code> rồi <code>npm run pm2:restart</code>.</div>
+        <% } %>
+      </div>
+      <div class="rowitem">
+        <div class="label">Lưu ý</div>
+        <div class="value"><code>Không chạy npm install</code></div>
+        <div class="sub">Nếu sau này có thay đổi dependency, nên cập nhật thủ công hoặc bật thêm chế độ cài dependency có xác nhận.</div>
+      </div>
+    </div>
+    <% if (deployStatus && deployStatus.last && deployStatus.last.steps && deployStatus.last.steps.length) { %>
+      <div class="deploy-steps">
+        <% deployStatus.last.steps.forEach(step => { %>
+          <div class="deploy-step">
+            <div class="deploy-step-head">
+              <strong><%= step.name %></strong>
+              <span class="status <%= step.code === 0 ? 'status-ok' : 'status-muted' %>">exit <%= step.code %></span>
+            </div>
+            <div class="sub"><code><%= step.command %></code></div>
+            <% if (step.stdout || step.stderr) { %>
+              <pre class="deploy-log"><%= (step.stdout || step.stderr).slice(-4000) %></pre>
+            <% } %>
+          </div>
+        <% }) %>
+      </div>
+    <% } %>
   </section>
 </div>
 </body>
