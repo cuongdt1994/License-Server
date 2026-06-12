@@ -19,6 +19,7 @@ assert.equal(app.env.WEB_PORT, '5000');
 assert.equal(app.env.TCP_PORT, '27015');
 assert.equal(app.env.LICENSE_BIND_HOST, '0.0.0.0');
 assert.equal(app.env.LICENSE_COOKIE_SECURE, '0');
+assert.equal(app.env.LICENSE_TCP_SECRET, '');
 assert.ok(app.env.LICENSE_DATA_DIR.includes('license-server-data'));
 assert.ok(app.error_file.includes('logs'));
 assert.ok(app.out_file.includes('logs'));

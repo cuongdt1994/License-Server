@@ -34,6 +34,7 @@ module.exports = {
                 LICENSE_COOKIE_SECURE: process.env.LICENSE_COOKIE_SECURE || '0',
                 LICENSE_DATA_DIR: dataDir,
                 LICENSE_SESSION_SECRET: process.env.LICENSE_SESSION_SECRET || '',
+                LICENSE_TCP_SECRET: process.env.LICENSE_TCP_SECRET || '',
                 LICENSE_WEB_USER: process.env.LICENSE_WEB_USER || '',
                 LICENSE_WEB_PASS: process.env.LICENSE_WEB_PASS || '',
                 STRICT_LICENSE_KEY: process.env.STRICT_LICENSE_KEY || '0',

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { resolveDataDir } = require('../data_dir');
+const { resolveDataDir, rememberDataDir } = require('../data_dir');
 
 function tmp() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'license-data-dir-'));
@@ -56,6 +56,13 @@ function tmp() {
     const dataDir = path.join(tmp(), 'state-autoremember');
     const dir = resolveDataDir({ appDir, env: { LICENSE_DATA_DIR: dataDir } });
     assert.strictEqual(dir, dataDir);
+    assert.strictEqual(fs.readFileSync(path.join(appDir, 'data_dir.local'), 'utf8').trim(), dataDir);
+}
+
+{
+    const appDir = tmp();
+    const dataDir = path.join(tmp(), 'state-setup-wizard');
+    rememberDataDir(appDir, dataDir);
     assert.strictEqual(fs.readFileSync(path.join(appDir, 'data_dir.local'), 'utf8').trim(), dataDir);
 }
 

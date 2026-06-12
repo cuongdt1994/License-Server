@@ -14,6 +14,9 @@ const {
     securityHeaders,
     isAgentScriptAuthorized,
     consumeFlash,
+    hashPassword,
+    verifyPassword,
+    normalizeAdminCredentials,
 } = require('../security');
 
 {
@@ -66,6 +69,22 @@ const {
     assert.deepStrictEqual(consumeFlash(session), { type: 'success', msg: 'saved' });
     assert.strictEqual(session.flash, undefined);
     assert.strictEqual(consumeFlash(session), null);
+}
+
+{
+    const stored = hashPassword('correct horse battery staple');
+    assert.match(stored, /^pbkdf2_sha256\$\d+\$/);
+    assert.strictEqual(verifyPassword('correct horse battery staple', stored), true);
+    assert.strictEqual(verifyPassword('wrong', stored), false);
+    assert.notStrictEqual(hashPassword('correct horse battery staple'), stored, 'hashes include a random salt');
+}
+
+{
+    const normalized = normalizeAdminCredentials({ user: 'admin', pass: 'legacy-plain' });
+    assert.strictEqual(normalized.user, 'admin');
+    assert.ok(normalized.pass_hash);
+    assert.strictEqual(normalized.pass, undefined);
+    assert.strictEqual(verifyPassword('legacy-plain', normalized.pass_hash), true);
 }
 
 console.log('security tests passed');

@@ -11,7 +11,7 @@ const WebSocket = require('ws');
 const multer    = require('multer');
 const speakeasy = require('speakeasy');
 const QRCode    = require('qrcode');
-const { resolveDataDirInfo } = require('./data_dir');
+const { resolveDataDirInfo, rememberDataDir } = require('./data_dir');
 const { buildRuntimeConfig } = require('./runtime_config');
 const {
     ensureCsrfToken,
@@ -22,14 +22,17 @@ const {
     auditEvent,
     securityHeaders,
     isAgentScriptAuthorized,
+    hashPassword,
+    verifyPassword,
+    normalizeAdminCredentials,
 } = require('./security');
 const agent     = require('./agent_manager');
 const risk      = require('./risk_manager');
 const commandPolicy = require('./command_policy');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
-const SECRET_KEY      = Buffer.from('KhongCogiSecret2024!@#$%^&*()_+=');
 const RUNTIME         = buildRuntimeConfig();
+const SECRET_KEY      = Buffer.from(RUNTIME.tcpSecret);
 const TCP_PORT        = RUNTIME.tcpPort;
 const WEB_PORT        = RUNTIME.webPort;
 const BIND_HOST       = RUNTIME.bindHost;
@@ -204,23 +207,31 @@ function loadAdminCredentials() {
         if (!envUser || !envPass) {
             throw new Error('LICENSE_WEB_USER and LICENSE_WEB_PASS must both be set when using env credentials.');
         }
-        return { user: envUser, pass: envPass };
+        return { user: envUser, pass_hash: hashPassword(envPass), source: 'env' };
     }
     if (fs.existsSync(ADMIN_FILE)) {
         try {
             const raw = JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8'));
-            if (raw?.user && raw?.pass) return { user: String(raw.user), pass: String(raw.pass) };
+            const normalized = normalizeAdminCredentials(raw);
+            if (normalized) {
+                if (raw.pass || raw.pass_hash !== normalized.pass_hash) {
+                    fs.writeFileSync(ADMIN_FILE, JSON.stringify(normalized, null, 2), { mode: 0o600 });
+                }
+                return normalized;
+            }
         } catch {}
     }
-    const generated = { user: 'admin', pass: crypto.randomBytes(18).toString('base64url') };
-    fs.writeFileSync(ADMIN_FILE, JSON.stringify(generated, null, 2), { mode: 0o600 });
-    console.warn(`[WARN] Generated initial admin credentials in ${ADMIN_FILE}. User: ${generated.user} Password: ${generated.pass}`);
-    return generated;
+    return null;
 }
 
-const adminCreds = loadAdminCredentials();
-const WEB_USER = adminCreds.user;
-const WEB_PASS = adminCreds.pass;
+let adminCreds = loadAdminCredentials();
+let setupRequired = !adminCreds;
+let WEB_USER = adminCreds?.user || null;
+function verifyAdminLogin(username, password) {
+    if (setupRequired || !adminCreds) return false;
+    if (username !== WEB_USER) return false;
+    return verifyPassword(password, adminCreds.pass_hash);
+}
 
 function log(level, msg) {
     const line = `${new Date().toISOString().replace('T', ' ').slice(0, 19)}  ${level.padEnd(7)}  ${msg}`;
@@ -807,19 +818,90 @@ app.use((req, res, next) => {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
+function suggestedDataDir() {
+    return path.resolve(__dirname, '..', 'runtime', 'license-server-data');
+}
+
+function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
+    const user = String(username || '').trim();
+    const pass = String(password || '');
+    const confirm = String(confirmPassword || '');
+    const dirInput = String(dataDir || '').trim();
+    if (!user) return { ok: false, error: 'Tài khoản admin không được để trống.' };
+    if (pass.length < 10) return { ok: false, error: 'Mật khẩu cần ít nhất 10 ký tự.' };
+    if (pass !== confirm) return { ok: false, error: 'Xác nhận mật khẩu không khớp.' };
+    if (!dirInput) return { ok: false, error: 'Vui lòng chọn thư mục lưu data.' };
+
+    let targetInfo;
+    try {
+        targetInfo = resolveDataDirInfo({ appDir: __dirname, env: { LICENSE_DATA_DIR: dirInput } });
+    } catch (e) {
+        return { ok: false, error: e.message };
+    }
+
+    rememberDataDir(__dirname, targetInfo.dir);
+    const nextCreds = { user, pass_hash: hashPassword(pass) };
+    fs.writeFileSync(path.join(targetInfo.dir, 'admin.json'), JSON.stringify(nextCreds, null, 2), { mode: 0o600 });
+
+    if (path.resolve(targetInfo.dir) === path.resolve(DATA_DIR)) {
+        adminCreds = nextCreds;
+        WEB_USER = user;
+        setupRequired = false;
+    }
+
+    return {
+        ok: true,
+        restartRequired: path.resolve(targetInfo.dir) !== path.resolve(DATA_DIR),
+        dataDir: targetInfo.dir,
+    };
+}
+
 function auth(req, res, next) {
+    if (setupRequired) return res.redirect('/setup');
     if (req.session.pendingTwoFactor) return res.redirect('/verify-2fa');
     if (req.session.loggedIn) return next();
     res.redirect('/login');
 }
 
 // ── Login / Logout ────────────────────────────────────────────────────────────
-app.get('/login', (req, res) => res.render('login', { error: null }));
+app.get('/setup', (req, res) => {
+    if (!setupRequired) return res.redirect('/login');
+    res.render('setup', { error: null, suggestedDataDir: suggestedDataDir(), result: null });
+});
+app.post('/setup', (req, res) => {
+    if (!setupRequired) return res.redirect('/login');
+    const result = saveInitialSetup({
+        username: req.body.username,
+        password: req.body.password,
+        confirmPassword: req.body.confirm_password,
+        dataDir: req.body.data_dir,
+    });
+    if (!result.ok) {
+        return res.render('setup', {
+            error: result.error,
+            suggestedDataDir: req.body.data_dir || suggestedDataDir(),
+            result: null,
+        });
+    }
+    auditEvent(AUDIT_FILE, {
+        action: 'setup.created',
+        user: req.body.username,
+        ip: clientIp(req),
+        details: { dataDir: result.dataDir, restartRequired: result.restartRequired },
+    });
+    res.render('setup', { error: null, suggestedDataDir: result.dataDir, result });
+});
+
+app.get('/login', (req, res) => {
+    if (setupRequired) return res.redirect('/setup');
+    res.render('login', { error: null });
+});
 app.post('/login', (req, res) => {
+    if (setupRequired) return res.redirect('/setup');
     const ip = clientIp(req);
     const rl = rl_check(ip);
     if (rl.blocked) return res.render('login', { error: `Quá nhiều lần thử. Chờ ${rl.remaining} phút.` });
-    if (req.body.username === WEB_USER && req.body.password === WEB_PASS) {
+    if (verifyAdminLogin(req.body.username, req.body.password)) {
         rl_clear(ip);
         const s = loadSettings();
         if (s.totp_enabled && s.totp_secret) {

@@ -4,6 +4,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const PASSWORD_ITERATIONS = 210000;
+const PASSWORD_KEYLEN = 32;
+const PASSWORD_DIGEST = 'sha256';
 
 function ensureCsrfToken(session) {
     if (!session.csrfToken) session.csrfToken = crypto.randomBytes(32).toString('base64url');
@@ -14,6 +17,29 @@ function safeEqual(a, b) {
     const aa = Buffer.from(String(a || ''));
     const bb = Buffer.from(String(b || ''));
     return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+}
+
+function hashPassword(password, { iterations = PASSWORD_ITERATIONS } = {}) {
+    const salt = crypto.randomBytes(16).toString('base64url');
+    const hash = crypto.pbkdf2Sync(String(password || ''), salt, iterations, PASSWORD_KEYLEN, PASSWORD_DIGEST).toString('base64url');
+    return `pbkdf2_sha256$${iterations}$${salt}$${hash}`;
+}
+
+function verifyPassword(password, stored) {
+    const parts = String(stored || '').split('$');
+    if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') return false;
+    const iterations = parseInt(parts[1], 10);
+    if (!Number.isInteger(iterations) || iterations < 100000) return false;
+    const expected = Buffer.from(parts[3], 'base64url');
+    const actual = crypto.pbkdf2Sync(String(password || ''), parts[2], iterations, expected.length, PASSWORD_DIGEST);
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function normalizeAdminCredentials(raw) {
+    const user = String(raw?.user || 'admin');
+    if (raw?.pass_hash) return { user, pass_hash: String(raw.pass_hash) };
+    if (raw?.pass) return { user, pass_hash: hashPassword(String(raw.pass)) };
+    return null;
 }
 
 function verifyCsrfRequest(req) {
@@ -76,4 +102,7 @@ module.exports = {
     auditEvent,
     securityHeaders,
     isAgentScriptAuthorized,
+    hashPassword,
+    verifyPassword,
+    normalizeAdminCredentials,
 };

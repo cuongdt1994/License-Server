@@ -13,6 +13,7 @@ function parsePort(env, name, fallback) {
 function buildRuntimeConfig({ env = process.env } = {}) {
     const warnings = [];
     const sessionSecret = (env.LICENSE_SESSION_SECRET || '').trim();
+    const tcpSecret = (env.LICENSE_TCP_SECRET || '').trim();
     const dataDir = (env.LICENSE_DATA_DIR || env.License_DATA_DIR || '').trim();
 
     if (!sessionSecret) {
@@ -22,6 +23,12 @@ function buildRuntimeConfig({ env = process.env } = {}) {
     }
     if (!dataDir) {
         warnings.push('LICENSE_DATA_DIR is not set; runtime data may live inside the app directory.');
+    }
+    if (tcpSecret && Buffer.byteLength(tcpSecret, 'utf8') !== 32) {
+        throw new Error('LICENSE_TCP_SECRET must be exactly 32 UTF-8 bytes.');
+    }
+    if (!tcpSecret) {
+        warnings.push('LICENSE_TCP_SECRET is not set; built-in TCP secret is only for compatibility.');
     }
 
     const cookieSecureRaw = (env.LICENSE_COOKIE_SECURE || '').trim().toLowerCase();
@@ -33,6 +40,8 @@ function buildRuntimeConfig({ env = process.env } = {}) {
         bindHost: (env.LICENSE_BIND_HOST || '0.0.0.0').trim() || '0.0.0.0',
         nodeEnv: env.NODE_ENV || 'development',
         cookieSecure,
+        tcpSecret: tcpSecret || 'KhongCogiSecret2024!@#$%^&*()_+=',
+        tcpSecretSource: tcpSecret ? 'env:LICENSE_TCP_SECRET' : 'built-in compatibility default',
         dataDir,
         warnings,
         pm2: {

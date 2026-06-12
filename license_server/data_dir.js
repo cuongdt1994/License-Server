@@ -58,4 +58,4 @@ function resolveDataDir(opts = {}) {
     return resolveDataDirInfo(opts).dir;
 }
 
-module.exports = { resolveDataDir, resolveDataDirInfo };
+module.exports = { resolveDataDir, resolveDataDirInfo, rememberDataDir };
