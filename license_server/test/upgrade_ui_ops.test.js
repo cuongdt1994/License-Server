@@ -27,6 +27,7 @@ assert.match(operations, /\/health/);
 assert.match(operations, /Cập nhật từ Git/);
 assert.match(operations, /deployStatus/);
 assert.match(operations, /\/operations\/update/);
+assert.match(operations, /Không chạy npm install/);
 
 assert.match(machines, /id="machineSearch"/);
 assert.match(machines, /data-machine-row/);
