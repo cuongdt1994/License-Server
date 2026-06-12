@@ -176,6 +176,29 @@ function createDeployManager(options = {}) {
         }
     }
 
+    async function restartPm2Only() {
+        if (running) throw new Error('Deployment is already running');
+        running = true;
+        const result = {
+            type: 'restart',
+            ok: true,
+            startedAt: new Date().toISOString(),
+            finishedAt: null,
+            steps: [],
+        };
+        last = result;
+        try {
+            const restart = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
+            result.steps.push(restart);
+            if (restart.code !== 0) result.ok = false;
+            return result;
+        } finally {
+            result.finishedAt = new Date().toISOString();
+            rememberResult(result);
+            running = false;
+        }
+    }
+
     async function checkForUpdates() {
         if (running) throw new Error('Deployment is already running');
         running = true;
@@ -263,7 +286,7 @@ function createDeployManager(options = {}) {
         return { running, last, lastCheck, history };
     }
 
-    return { checkForUpdates, rememberResult, rollbackLast, runUpdate, status };
+    return { checkForUpdates, rememberResult, restartPm2Only, rollbackLast, runUpdate, status };
 }
 
 module.exports = { createDeployManager, resolveDefaultPm2Command, HISTORY_LIMIT };

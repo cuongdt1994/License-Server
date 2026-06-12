@@ -1307,6 +1307,19 @@ app.post('/operations/check-update', auth, async (req, res) => {
     res.redirect('/operations');
 });
 
+app.post('/operations/restart', auth, async (req, res) => {
+    try {
+        const result = await deployManager.restartPm2Only();
+        audit(req, 'deploy.restart', { ok: result.ok });
+        req.session.flash = result.ok
+            ? { type: 'success', msg: 'Đã restart PM2.' }
+            : { type: 'danger', msg: 'Restart PM2 thất bại. Xem chi tiết trong Operations.' };
+    } catch (err) {
+        req.session.flash = { type: 'danger', msg: err.message || 'Không thể restart PM2.' };
+    }
+    res.redirect('/operations');
+});
+
 app.post('/operations/rollback', auth, async (req, res) => {
     try {
         const result = await deployManager.rollbackLast();
