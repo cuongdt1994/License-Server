@@ -11,8 +11,8 @@ const WebSocket = require('ws');
 const multer    = require('multer');
 const speakeasy = require('speakeasy');
 const QRCode    = require('qrcode');
-const cron      = require('node-cron');
 const { resolveDataDirInfo } = require('./data_dir');
+const { buildRuntimeConfig } = require('./runtime_config');
 const {
     ensureCsrfToken,
     verifyCsrfRequest,
@@ -29,8 +29,10 @@ const commandPolicy = require('./command_policy');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
 const SECRET_KEY      = Buffer.from('KhongCogiSecret2024!@#$%^&*()_+=');
-const TCP_PORT        = 27015;
-const WEB_PORT        = 5000;
+const RUNTIME         = buildRuntimeConfig();
+const TCP_PORT        = RUNTIME.tcpPort;
+const WEB_PORT        = RUNTIME.webPort;
+const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
 const DB_FILE         = path.join(DATA_DIR, 'whitelist.json');
@@ -457,10 +459,23 @@ setInterval(() => {
 }, 6 * 60 * 60 * 1000);
 
 // ── Cron: daily backup 3:00 AM ────────────────────────────────────────────────
-cron.schedule('0 3 * * *', doBackup);
+function scheduleDailyTask(name, hour, minute, fn, { dayOfWeek = null } = {}) {
+    let lastRunKey = '';
+    setInterval(() => {
+        const d = new Date();
+        if (d.getHours() !== hour || d.getMinutes() !== minute) return;
+        if (dayOfWeek !== null && d.getDay() !== dayOfWeek) return;
+        const key = d.toISOString().slice(0, 10);
+        if (lastRunKey === key) return;
+        lastRunKey = key;
+        try { fn(); } catch (e) { log('ERROR', `${name} failed: ${e.message}`); }
+    }, 60 * 1000).unref();
+}
+
+scheduleDailyTask('daily_backup', 3, 0, doBackup);
 
 // ── Cron: expiry warning 9:00 AM daily ───────────────────────────────────────
-cron.schedule('0 9 * * *', () => {
+scheduleDailyTask('expiry_warning', 9, 0, () => {
     const db = loadDB();
     for (const [mid, entry] of Object.entries(db)) {
         if (entry.revoked) continue;
@@ -474,7 +489,7 @@ cron.schedule('0 9 * * *', () => {
 });
 
 // ── Cron: weekly report Monday 8:00 AM ───────────────────────────────────────
-cron.schedule('0 8 * * 1', () => {
+scheduleDailyTask('weekly_report', 8, 0, () => {
     const db = loadDB();
     const total = Object.keys(db).length;
     const online = Object.keys(active).length;
@@ -487,7 +502,7 @@ cron.schedule('0 8 * * 1', () => {
     if (expiringSoon.length) msg += `\n\n⏰ <b>Sắp hết hạn (≤7 ngày):</b>\n${expiringSoon.join('\n')}`;
     sendTelegram(msg);
     log('INFO', 'Weekly report sent');
-});
+}, { dayOfWeek: 1 });
 
 // ── TCP License Server ────────────────────────────────────────────────────────
 const tcpServer = net.createServer((socket) => {
@@ -723,7 +738,7 @@ const tcpServer = net.createServer((socket) => {
     socket.on('error', () => {});
     socket.on('timeout', () => socket.destroy());
 });
-tcpServer.listen(TCP_PORT, '0.0.0.0', () => log('INFO', `TCP :${TCP_PORT}  AES-256-CTR`));
+tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM`));
 
 // ── Express + HTTP server ─────────────────────────────────────────────────────
 const app        = express();
@@ -761,7 +776,7 @@ const sessionParser = session({
         maxAge: 8 * 60 * 60 * 1000,
         httpOnly: true,
         sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        secure: RUNTIME.cookieSecure,
     },
 });
 app.use(sessionParser);
@@ -1106,12 +1121,46 @@ app.post('/plans/delete', auth, (req, res) => {
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+function operationsSnapshot() {
+    const backups = fs.existsSync(BACKUP_DIR)
+        ? fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('whitelist_') && f.endsWith('.json')).sort()
+        : [];
+    const latestBackup = backups.length ? backups[backups.length - 1] : null;
+    const memory = process.memoryUsage();
+    return {
+        runtime: RUNTIME,
+        processInfo: {
+            pid: process.pid,
+            uptime: Math.floor(process.uptime()),
+            node: process.version,
+            platform: `${process.platform} ${process.arch}`,
+            rssMb: Math.round(memory.rss / 1024 / 1024),
+            heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+        },
+        backupInfo: {
+            count: backups.length,
+            latest: latestBackup,
+            dir: BACKUP_DIR,
+        },
+        dataDir: DATA_DIR,
+        dataDirSource: DATA_DIR_INFO.source,
+        webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
+        tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
+    };
+}
+
+app.get('/operations', auth, (req, res) => {
+    res.render('operations', { ...operationsSnapshot(), flash: consumeFlash(req.session) });
+});
+
 app.get('/settings', auth, (req, res) => {
     res.render('settings', {
         settings: loadSettings(),
         dataDir: DATA_DIR,
         dataDirSource: DATA_DIR_INFO.source,
         dataDirLocalFile: path.join(__dirname, 'data_dir.local'),
+        runtime: RUNTIME,
+        runtimeWarnings: RUNTIME.warnings,
         flash: consumeFlash(req.session),
     });
 });
@@ -1266,7 +1315,18 @@ app.post('/portal', (req, res) => {
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
     res.json({
-        status: 'ok', uptime: Math.floor(process.uptime()),
+        status: 'ok',
+        uptime: Math.floor(process.uptime()),
+        runtime: {
+            node_env: RUNTIME.nodeEnv,
+            bind_host: BIND_HOST,
+            web_port: WEB_PORT,
+            tcp_port: TCP_PORT,
+            data_dir: DATA_DIR,
+            data_dir_source: DATA_DIR_INFO.source,
+            pm2: RUNTIME.pm2,
+            warnings: RUNTIME.warnings,
+        },
         machines_total: Object.keys(loadDB()).length,
         machines_online: Object.keys(active).length,
         maintenance: isMaintenanceActive(), ts: Date.now(),
@@ -1579,7 +1639,24 @@ httpServer.on('upgrade', (req, sock, head) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-httpServer.listen(WEB_PORT, '0.0.0.0', () => {
-    log('INFO', `Web UI: http://0.0.0.0:${WEB_PORT}`);
+httpServer.listen(WEB_PORT, BIND_HOST, () => {
+    log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
+    for (const warning of RUNTIME.warnings) log('WARNING', warning);
     doBackup(); // Backup on startup
 });
+
+function shutdown(signal) {
+    log('INFO', `${signal} received, shutting down gracefully...`);
+    const forceExit = setTimeout(() => process.exit(1), 10000);
+    forceExit.unref();
+    try { wss?.close(); } catch {}
+    tcpServer.close(() => {
+        httpServer.close(() => {
+            log('INFO', 'Shutdown complete');
+            process.exit(0);
+        });
+    });
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

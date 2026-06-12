@@ -63,8 +63,13 @@
     .runtime-label { color: var(--muted); font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 7px; }
     .runtime-value { color: var(--text); font-size: .84rem; overflow-wrap: anywhere; }
     .runtime-value code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+    .runtime-status { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .runtime-status .runtime-item { min-height: 86px; }
+    .warning-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+    .warning-list li { border: 1px solid #78350f; background: rgba(120,53,15,.18); color: #fde68a; border-radius: 8px; padding: 9px 11px; font-size: .82rem; display: flex; gap: 8px; align-items: flex-start; }
     .callout { display: flex; gap: 10px; align-items: flex-start; border: 1px solid #1d4ed8; background: rgba(29,78,216,.12); color: #bfdbfe; border-radius: 8px; padding: 12px; font-size: .82rem; margin-top: 14px; }
     @media (max-width: 820px) {
+      .runtime-status { grid-template-columns: 1fr; }
       .runtime-grid { grid-template-columns: 1fr; }
       .page-head { display: block; }
     }
@@ -78,6 +83,7 @@
     <a href="/">Dashboard</a>
     <a href="/machines">Machines</a>
     <a href="/plans">Plans</a>
+    <a href="/operations">Operations</a>
     <a href="/bans">IP Bans</a>
     <a href="/history">History</a>
     <a href="/logs">Logs</a>
@@ -94,7 +100,7 @@
     <div>
       <div class="eyebrow">System settings</div>
       <h1 class="page-title">License Manager Control Center</h1>
-      <div class="page-sub">Runtime storage, notifications, command safety, and account protection.</div>
+      <div class="page-sub">Lưu trữ runtime, thông báo, an toàn lệnh và bảo vệ tài khoản.</div>
     </div>
   </div>
 
@@ -118,9 +124,55 @@
     <div class="callout">
       <i class="bi bi-info-circle-fill"></i>
       <div>
-        To make the server remember a storage path without exporting env vars, put one absolute path in <code>data_dir.local</code>, then restart the screen session. <code>LICENSE_DATA_DIR</code> still has priority when it is set.
+        Để server ghi nhớ đường dẫn lưu trữ mà không cần export env, đặt một đường dẫn tuyệt đối trong <code>data_dir.local</code>, rồi restart tiến trình. <code>LICENSE_DATA_DIR</code> vẫn được ưu tiên khi có cấu hình.
       </div>
     </div>
+  </div>
+
+  <!-- Runtime status -->
+  <div class="section">
+    <div class="section-title"><i class="bi bi-activity"></i>Runtime Status</div>
+    <div class="runtime-status">
+      <div class="runtime-item">
+        <div class="runtime-label">Web UI</div>
+        <div class="runtime-value"><code><%= runtime.bindHost %>:<%= runtime.webPort %></code></div>
+      </div>
+      <div class="runtime-item">
+        <div class="runtime-label">TCP license</div>
+        <div class="runtime-value"><code><%= runtime.bindHost %>:<%= runtime.tcpPort %></code></div>
+      </div>
+      <div class="runtime-item">
+        <div class="runtime-label">Node env</div>
+        <div class="runtime-value"><code><%= runtime.nodeEnv %></code></div>
+      </div>
+      <div class="runtime-item">
+        <div class="runtime-label">PM2</div>
+        <div class="runtime-value">
+          <% if (runtime.pm2 && runtime.pm2.enabled) { %>
+            <span class="status-badge badge-on" style="margin:0"><i class="bi bi-check-circle-fill"></i>Online</span>
+            <% if (runtime.pm2.name || runtime.pm2.id) { %>
+              <div style="margin-top:7px;color:var(--muted);font-size:.76rem">
+                <code><%= runtime.pm2.name || 'pm2' %></code><% if (runtime.pm2.id) { %> #<%= runtime.pm2.id %><% } %>
+              </div>
+            <% } %>
+          <% } else { %>
+            <span class="status-badge badge-off" style="margin:0"><i class="bi bi-dash-circle"></i>Not PM2</span>
+          <% } %>
+        </div>
+      </div>
+    </div>
+    <% if (runtimeWarnings && runtimeWarnings.length) { %>
+      <ul class="warning-list">
+        <% runtimeWarnings.forEach(function(warning) { %>
+          <li><i class="bi bi-exclamation-triangle-fill"></i><span><%= warning %></span></li>
+        <% }) %>
+      </ul>
+    <% } else { %>
+      <div class="callout" style="border-color:#047857;background:rgba(4,120,87,.14);color:#a7f3d0">
+        <i class="bi bi-check-circle-fill"></i>
+        <div>Runtime configuration looks ready for PM2.</div>
+      </div>
+    <% } %>
   </div>
 
   <!-- Telegram -->

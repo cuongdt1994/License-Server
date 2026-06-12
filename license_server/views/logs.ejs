@@ -9,23 +9,29 @@
   <style>
     :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
     * { box-sizing: border-box; }
-    body    { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; }
+    body    { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; min-height: 100vh; }
     .topbar { background: var(--surface); border-bottom: 1px solid var(--border);
-              padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+              padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; z-index: 20; }
     .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
     .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
+    .nav-btns { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
     .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
                   border-radius: 6px; font-size: .875rem; transition: background .15s; }
     .nav-btns a:hover      { background: var(--border); color: #fff; }
     .nav-btns a.active     { background: var(--primary); color: #fff; }
     .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
     .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
-    .page   { padding: 24px; }
-    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .page   { padding: 24px; max-width: 1480px; margin: 0 auto; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
     .page-header h5 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+    .page-sub { margin-top: 6px; color: var(--muted); font-size: .85rem; }
+    .log-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .badge-refresh { background: #1f2937; border: 1px solid var(--border); color: var(--muted);
                      padding: 4px 12px; border-radius: 999px; font-size: .78rem; }
     .badge-refresh span { color: #fbbf24; font-weight: 700; }
+    .btn-outline { background: transparent; color: #d1d5db; border: 1px solid var(--border); text-decoration: none;
+                   padding: 7px 12px; border-radius: 8px; font-size: .82rem; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-outline:hover { background: var(--border); color: #fff; }
     .log-box { background: #0d1117; border: 1px solid var(--border); border-radius: 12px;
                padding: 20px; max-height: calc(100vh - 160px); overflow-y: auto;
                font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: .82rem; line-height: 1.8; }
@@ -50,6 +56,7 @@
     <a href="/">Dashboard</a>
     <a href="/machines">Machines</a>
     <a href="/plans">Plans</a>
+    <a href="/operations">Operations</a>
     <a href="/bans">IP Bans</a>
     <a href="/history">History</a>
     <a href="/logs" class="active">Logs</a>
@@ -60,9 +67,16 @@
 
 <div class="page">
   <div class="page-header">
-    <h5><i class="bi bi-terminal me-2" style="color:var(--primary)"></i>Server Logs</h5>
+    <div>
+      <h5><i class="bi bi-terminal me-2" style="color:var(--primary)"></i>Server Logs</h5>
+      <div class="page-sub">80 dòng gần nhất, tự cập nhật để theo dõi AUTH/HB và thao tác admin.</div>
+    </div>
+    <div class="log-actions">
+      <a class="btn-outline" href="/health" target="_blank"><i class="bi bi-heart-pulse"></i>Health</a>
+      <a class="btn-outline" href="/settings"><i class="bi bi-sliders"></i>Runtime</a>
     <div class="badge-refresh">
       80 dòng gần nhất &nbsp;·&nbsp; refresh sau <span id="cd">15</span>s
+    </div>
     </div>
   </div>
 

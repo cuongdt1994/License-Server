@@ -30,6 +30,8 @@
     .hero-title { margin: 0; font-size: 1.25rem; font-weight: 800; line-height: 1.25; }
     .hero-meta { margin-top: 6px; color: var(--muted); font-size: .86rem; }
     .hero-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .hero-link { border: 1px solid var(--border); color: #d1d5db; text-decoration: none; padding: 8px 12px; border-radius: 8px; font-size: .82rem; display: inline-flex; align-items: center; gap: 6px; background: rgba(22,30,46,.7); }
+    .hero-link:hover { background: var(--border); color: #fff; }
     .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
     .metric-card { background: rgba(31,41,55,.92); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; box-shadow: 0 14px 35px rgba(0,0,0,.14); }
     .metric-label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
@@ -45,6 +47,10 @@
     .table-title { display: flex; align-items: center; gap: 8px; font-size: .95rem; font-weight: 700; }
     .table-title i { color: var(--primary); }
     .table-hint { color: var(--muted); font-size: .8rem; }
+    .filter-bar { display:grid; grid-template-columns: minmax(220px, 1fr) 160px 160px auto; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border); background:#182132; align-items:center; }
+    .filter-input, .filter-select { width:100%; background:#111827; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:.85rem; outline:none; }
+    .filter-input:focus, .filter-select:focus { border-color:var(--primary); }
+    .filter-count { color:var(--muted); font-size:.8rem; white-space:nowrap; text-align:right; }
     .table-scroll { width: 100%; overflow-x: auto; }
     table    { width: 100%; min-width: 1160px; border-collapse: collapse; }
     thead th { background: #161e2e; color: #9ca3af; font-size: .78rem; font-weight: 600;
@@ -121,11 +127,14 @@
       .hero-panel { grid-template-columns: 1fr; }
       .hero-actions { justify-content: flex-start; }
       .metric-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      .filter-bar { grid-template-columns: 1fr 1fr; }
       .page { padding: 18px; }
     }
     @media (max-width: 560px) {
       .metric-grid { grid-template-columns: 1fr; }
       .table-toolbar { align-items: flex-start; flex-direction: column; }
+      .filter-bar { grid-template-columns: 1fr; }
+      .filter-count { text-align:left; }
       .btn-add { width: 100%; justify-content: center; }
     }
   </style>
@@ -140,6 +149,7 @@
     <a href="/">Dashboard</a>
     <a href="/machines" class="active">Machines</a>
     <a href="/plans">Plans</a>
+    <a href="/operations">Operations</a>
     <a href="/bans">IP Bans</a>
     <a href="/history">History</a>
     <a href="/logs">Logs</a>
@@ -165,10 +175,12 @@
   <section class="hero-panel">
     <div class="hero-copy">
       <div class="eyebrow">License server</div>
-      <h1 class="hero-title">Quản lý máy được cấp phép</h1>
-      <div class="hero-meta">Theo dõi trạng thái, hạn dùng, key và thao tác quản trị cho từng machine.</div>
+      <h1 class="hero-title">Quản lý license theo từng machine</h1>
+      <div class="hero-meta">Theo dõi trạng thái, hạn dùng, license key, IP lock và thao tác quản trị trên từng dòng.</div>
     </div>
     <div class="hero-actions">
+      <a class="hero-link" href="/plans"><i class="bi bi-layers"></i>Plans</a>
+      <a class="hero-link" href="/import"><i class="bi bi-upload"></i>Import</a>
       <button class="btn-add" data-modal-open="addOverlay">
         <i class="bi bi-plus-lg"></i> Cấp license mới
       </button>
@@ -212,6 +224,25 @@
       Chưa có máy nào được cấp phép
     </div>
     <% } else { %>
+    <div class="filter-bar">
+      <input id="machineSearch" class="filter-input" type="search" placeholder="Tìm machine, ghi chú, key, IP...">
+      <select id="machineStatusFilter" class="filter-select" data-filter-status>
+        <option value="">Tất cả trạng thái</option>
+        <option value="online">Online</option>
+        <option value="offline">Offline</option>
+        <option value="expired">Expired</option>
+        <option value="revoked">Revoked</option>
+        <option value="zombie">Zombie</option>
+      </select>
+      <select id="machineTierFilter" class="filter-select" data-filter-tier>
+        <option value="">Tất cả tier</option>
+        <option value="trial">Trial</option>
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+        <option value="unlimited">Unlimited</option>
+      </select>
+      <div class="filter-count"><span id="machineVisibleCount"><%= rows.length %></span>/<%= rows.length %> đang hiển thị</div>
+    </div>
     <div class="table-scroll">
     <table>
       <thead>
@@ -232,8 +263,14 @@
         <% rows.forEach(function(row) {
              var tier = row.tier || 'basic';
              var td   = TIERS[tier] || TIERS.basic;
+             var rowStatus = row.revoked ? 'revoked' : row.expired ? 'expired' : row.zombie ? 'zombie' : row.isOnline ? 'online' : 'offline';
+             var searchText = [
+               row.mid, tier, row.note, row.license_key,
+               Array.isArray(row.allowed_ips) ? row.allowed_ips.join(' ') : '',
+               rowStatus
+             ].filter(Boolean).join(' ').toLowerCase();
         %>
-        <tr>
+        <tr data-machine-row data-search="<%= searchText %>" data-status="<%= rowStatus %>" data-tier="<%= tier %>">
           <!-- Machine ID -->
           <td>
             <code><%= row.mid %></code>
@@ -631,6 +668,34 @@
 
   // Init on load
   updateTierUI('trial');
+
+  const machineSearch = document.getElementById('machineSearch');
+  const machineStatusFilter = document.getElementById('machineStatusFilter');
+  const machineTierFilter = document.getElementById('machineTierFilter');
+  const machineVisibleCount = document.getElementById('machineVisibleCount');
+  const machineRows = Array.from(document.querySelectorAll('[data-machine-row]'));
+
+  function applyMachineFilters() {
+    const query = (machineSearch?.value || '').trim().toLowerCase();
+    const status = machineStatusFilter?.value || '';
+    const tier = machineTierFilter?.value || '';
+    let visible = 0;
+
+    machineRows.forEach(row => {
+      const matchesQuery = !query || (row.dataset.search || '').includes(query);
+      const matchesStatus = !status || row.dataset.status === status;
+      const matchesTier = !tier || row.dataset.tier === tier;
+      const show = matchesQuery && matchesStatus && matchesTier;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+
+    if (machineVisibleCount) machineVisibleCount.textContent = String(visible);
+  }
+
+  [machineSearch, machineStatusFilter, machineTierFilter].forEach(el => {
+    if (el) el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', applyMachineFilters);
+  });
 
   // ── Plan picker → fill form ─────────────────────────────────────────────
   const planSel = document.getElementById('planPick');

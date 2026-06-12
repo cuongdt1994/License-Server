@@ -10,5 +10,11 @@ assert.match(settings, /Runtime Storage/);
 assert.match(settings, /dataDir/);
 assert.match(settings, /dataDirSource/);
 assert.match(settings, /dataDirLocalFile/);
+assert.match(settings, /Runtime Status/);
+assert.match(settings, /runtime\.webPort/);
+assert.match(settings, /runtime\.tcpPort/);
+assert.match(settings, /runtime\.bindHost/);
+assert.match(settings, /runtime\.pm2/);
+assert.match(settings, /runtimeWarnings/);
 
 console.log('ui settings runtime tests passed');

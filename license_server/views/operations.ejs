@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operations — License Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --bg:#111827; --surface:#1f2937; --panel:#161e2e; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
+    * { box-sizing: border-box; }
+    body { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin:0; min-height:100vh; }
+    .topbar { background: var(--surface); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; position:sticky; top:0; z-index:20; }
+    .topbar-brand { font-weight:700; font-size:1.1rem; display:flex; align-items:center; gap:8px; }
+    .topbar-brand i { color:var(--primary); font-size:1.3rem; }
+    .nav-btns { overflow-x:auto; max-width:100%; padding-bottom:2px; }
+    .nav-btns a { color:#d1d5db; text-decoration:none; padding:6px 14px; border-radius:6px; font-size:.875rem; transition:background .15s; }
+    .nav-btns a:hover { background:var(--border); color:#fff; }
+    .nav-btns a.active { background:var(--primary); color:#fff; }
+    .nav-btns a.btn-logout { color:#f87171; border:1px solid #f87171; }
+    .page { padding:24px; max-width:1280px; margin:0 auto; }
+    .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:18px; flex-wrap:wrap; }
+    .eyebrow { color:#93c5fd; font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
+    .page-title { margin:0; font-size:1.35rem; font-weight:800; }
+    .page-sub { margin-top:6px; color:var(--muted); font-size:.875rem; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .btn-linkish { border:1px solid var(--border); color:#d1d5db; text-decoration:none; padding:8px 12px; border-radius:8px; font-size:.82rem; display:inline-flex; align-items:center; gap:6px; background:rgba(22,30,46,.7); }
+    .btn-linkish:hover { background:var(--border); color:#fff; }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+    .cardx { background:rgba(31,41,55,.92); border:1px solid var(--border); border-radius:8px; padding:16px; min-width:0; }
+    .label { color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; font-weight:700; margin-bottom:8px; }
+    .value { font-size:1.35rem; font-weight:800; overflow-wrap:anywhere; }
+    .value code, code { background:var(--panel); color:#a5b4fc; padding:2px 6px; border-radius:4px; font-size:.82rem; overflow-wrap:anywhere; }
+    .sub { margin-top:6px; color:var(--muted); font-size:.78rem; overflow-wrap:anywhere; }
+    .status { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:4px 10px; font-size:.78rem; font-weight:800; }
+    .status-ok { background:#064e3b; color:#34d399; }
+    .status-muted { background:#374151; color:#d1d5db; }
+    .section { background:rgba(31,41,55,.92); border:1px solid var(--border); border-radius:8px; padding:18px; margin-bottom:16px; }
+    .section-title { display:flex; align-items:center; gap:8px; font-weight:800; margin-bottom:14px; }
+    .runtime-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .rowitem { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; min-width:0; }
+    @media (max-width: 900px) { .grid, .runtime-grid { grid-template-columns:1fr 1fr; } }
+    @media (max-width: 560px) { .grid, .runtime-grid { grid-template-columns:1fr; } .page { padding:18px; } }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
+  <div class="nav-btns d-flex gap-1">
+    <a href="/">Dashboard</a>
+    <a href="/machines">Machines</a>
+    <a href="/plans">Plans</a>
+    <a href="/operations" class="active">Operations</a>
+    <a href="/logs">Logs</a>
+    <a href="/settings">Settings</a>
+    <a href="/logout" class="btn-logout">Logout</a>
+  </div>
+</div>
+
+<div class="page">
+  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Vận hành runtime</div>
+      <h1 class="page-title">Trung tâm vận hành</h1>
+      <div class="page-sub">PM2, sức khỏe tiến trình, lưu trữ và backup ở cùng một nơi.</div>
+    </div>
+    <div class="actions">
+      <a class="btn-linkish" href="/health" target="_blank"><i class="bi bi-heart-pulse"></i>Health JSON</a>
+      <a class="btn-linkish" href="/logs"><i class="bi bi-terminal"></i>Logs</a>
+      <a class="btn-linkish" href="/settings"><i class="bi bi-sliders"></i>Settings</a>
+    </div>
+  </div>
+
+  <section class="grid">
+    <div class="cardx">
+      <div class="label">PM2</div>
+      <div class="value">
+        <% if (runtime.pm2 && runtime.pm2.enabled) { %>
+          <span class="status status-ok"><i class="bi bi-check-circle-fill"></i>Online</span>
+        <% } else { %>
+          <span class="status status-muted"><i class="bi bi-dash-circle"></i>Not PM2</span>
+        <% } %>
+      </div>
+      <div class="sub"><%= runtime.pm2 && runtime.pm2.name ? runtime.pm2.name : 'Chạy npm run pm2:start để gắn vào PM2' %></div>
+    </div>
+    <div class="cardx">
+      <div class="label">Process uptime</div>
+      <div class="value"><%= Math.floor(processInfo.uptime / 60) %>m</div>
+      <div class="sub">PID <code><%= processInfo.pid %></code> · <%= processInfo.node %></div>
+    </div>
+    <div class="cardx">
+      <div class="label">Memory</div>
+      <div class="value"><%= processInfo.rssMb %> MB</div>
+      <div class="sub">Heap used <%= processInfo.heapUsedMb %> MB</div>
+    </div>
+    <div class="cardx">
+      <div class="label">Backups</div>
+      <div class="value"><%= backupInfo.count %></div>
+      <div class="sub">Mới nhất: <%= backupInfo.latest || 'chưa có' %></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title"><i class="bi bi-diagram-3"></i>Endpoint runtime</div>
+    <div class="runtime-grid">
+      <div class="rowitem">
+        <div class="label">Web UI</div>
+        <div class="value"><code><%= webUrl %></code></div>
+      </div>
+      <div class="rowitem">
+        <div class="label">TCP license</div>
+        <div class="value"><code><%= tcpAddress %></code></div>
+      </div>
+      <div class="rowitem">
+        <div class="label">Data dir</div>
+        <div class="value"><code><%= dataDir %></code></div>
+        <div class="sub">Source: <%= dataDirSource %></div>
+      </div>
+      <div class="rowitem">
+        <div class="label">Backup dir</div>
+        <div class="value"><code><%= backupInfo.dir %></code></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title"><i class="bi bi-server"></i>Tiến trình host</div>
+    <div class="runtime-grid">
+      <div class="rowitem">
+        <div class="label">Platform</div>
+        <div class="value"><code><%= processInfo.platform %></code></div>
+      </div>
+      <div class="rowitem">
+        <div class="label">Environment</div>
+        <div class="value"><code><%= runtime.nodeEnv %></code></div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>
