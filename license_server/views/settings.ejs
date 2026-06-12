@@ -160,6 +160,18 @@
           <% } %>
         </div>
       </div>
+      <div class="runtime-item">
+        <div class="runtime-label">Session secret</div>
+        <div class="runtime-value"><code><%= runtime.secretSources && runtime.secretSources.session || 'unknown' %></code></div>
+      </div>
+      <div class="runtime-item">
+        <div class="runtime-label">TCP secret</div>
+        <div class="runtime-value"><code><%= runtime.secretSources && runtime.secretSources.tcp || 'unknown' %></code></div>
+      </div>
+      <div class="runtime-item">
+        <div class="runtime-label">Secret file</div>
+        <div class="runtime-value"><code><%= runtime.secretFile || 'env only' %></code></div>
+      </div>
     </div>
     <% if (runtimeWarnings && runtimeWarnings.length) { %>
       <ul class="warning-list">

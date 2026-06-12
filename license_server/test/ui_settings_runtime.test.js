@@ -16,5 +16,9 @@ assert.match(settings, /runtime\.tcpPort/);
 assert.match(settings, /runtime\.bindHost/);
 assert.match(settings, /runtime\.pm2/);
 assert.match(settings, /runtimeWarnings/);
+assert.match(settings, /Session secret/);
+assert.match(settings, /TCP secret/);
+assert.match(settings, /runtime\.secretSources/);
+assert.match(settings, /runtime\.secretFile/);
 
 console.log('ui settings runtime tests passed');

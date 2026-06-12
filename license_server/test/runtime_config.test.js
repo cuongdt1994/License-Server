@@ -10,8 +10,6 @@ const { buildRuntimeConfig } = require('../runtime_config');
             TCP_PORT: '28015',
             LICENSE_BIND_HOST: '127.0.0.1',
             LICENSE_DATA_DIR: 'C:\\license-data',
-            LICENSE_SESSION_SECRET: 'x'.repeat(32),
-            LICENSE_TCP_SECRET: '12345678901234567890123456789012',
             pm_id: '3',
             name: 'license-server',
             PM2_HOME: 'C:\\pm2',
@@ -27,7 +25,6 @@ const { buildRuntimeConfig } = require('../runtime_config');
     assert.equal(cfg.pm2.name, 'license-server');
     assert.equal(cfg.cookieSecure, true);
     assert.deepEqual(cfg.warnings, []);
-    assert.equal(cfg.tcpSecretSource, 'env:LICENSE_TCP_SECRET');
 }
 
 {
@@ -38,16 +35,12 @@ const { buildRuntimeConfig } = require('../runtime_config');
     assert.equal(cfg.bindHost, '0.0.0.0');
     assert.equal(cfg.cookieSecure, false);
     assert.equal(cfg.pm2.enabled, false);
-    assert.ok(cfg.warnings.includes('LICENSE_SESSION_SECRET is not set; sessions will rotate on restart.'));
     assert.ok(cfg.warnings.includes('LICENSE_DATA_DIR is not set; runtime data may live inside the app directory.'));
-    assert.ok(cfg.warnings.includes('LICENSE_TCP_SECRET is not set; built-in TCP secret is only for compatibility.'));
-    assert.equal(cfg.tcpSecretSource, 'built-in compatibility default');
 }
 
 {
     const cfg = buildRuntimeConfig({ env: { NODE_ENV: 'production', LICENSE_COOKIE_SECURE: '0' } });
     assert.equal(cfg.cookieSecure, false);
-    assert.ok(cfg.warnings.includes('LICENSE_SESSION_SECRET is not set; sessions will rotate on restart.'));
 }
 
 {
@@ -58,14 +51,6 @@ const { buildRuntimeConfig } = require('../runtime_config');
     assert.throws(
         () => buildRuntimeConfig({ env: { TCP_PORT: '70000' } }),
         /TCP_PORT must be a number between 1 and 65535/
-    );
-    assert.throws(
-        () => buildRuntimeConfig({ env: { LICENSE_TCP_SECRET: 'short' } }),
-        /LICENSE_TCP_SECRET must be exactly 32 UTF-8 bytes/
-    );
-    assert.throws(
-        () => buildRuntimeConfig({ env: { LICENSE_TCP_SECRET: 'x'.repeat(33) } }),
-        /LICENSE_TCP_SECRET must be exactly 32 UTF-8 bytes/
     );
 }
 

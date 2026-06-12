@@ -24,6 +24,8 @@ npm run pm2:save
 - Data rieng ngoai source: `../runtime/license-server-data`
 - Log PM2: `../runtime/logs`
 
+Neu khong set `LICENSE_SESSION_SECRET` va `LICENSE_TCP_SECRET`, app se tu sinh secret manh va luu ben trong `runtime_secrets.json` cua data dir. Khong xoa file nay neu client license dang dung TCP secret do.
+
 ## Lenh van hanh
 
 ```powershell
@@ -53,8 +55,8 @@ Neu `runtime.warnings` bao thieu `LICENSE_SESSION_SECRET`, hay dat secret co it 
 
 ## Ghi chu production
 
-- Nen dat `LICENSE_SESSION_SECRET`, `LICENSE_WEB_USER`, `LICENSE_WEB_PASS` bang bien moi truong that cua may chu.
-- Nen dat `LICENSE_TCP_SECRET` rieng cho production va dong bo secret nay voi client license.
+- Co the de app tu cap `LICENSE_SESSION_SECRET` va `LICENSE_TCP_SECRET` trong lan setup dau. Neu tu set env, hay luu o noi quan ly secret cua may chu.
+- Neu doi `LICENSE_TCP_SECRET`, phai dong bo secret nay voi client license.
 - Khong dat `LICENSE_DATA_DIR` trong thu muc source neu deploy bang copy/rebuild.
 - Neu dung firewall, mo ca port web va TCP license.
 - Neu Web UI chay sau HTTPS reverse proxy, dat `LICENSE_COOKIE_SECURE=1`.

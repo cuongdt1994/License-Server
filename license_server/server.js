@@ -13,6 +13,7 @@ const speakeasy = require('speakeasy');
 const QRCode    = require('qrcode');
 const { resolveDataDirInfo, rememberDataDir } = require('./data_dir');
 const { buildRuntimeConfig } = require('./runtime_config');
+const { ensureRuntimeSecrets } = require('./runtime_secrets');
 const {
     ensureCsrfToken,
     verifyCsrfRequest,
@@ -32,12 +33,13 @@ const commandPolicy = require('./command_policy');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
 const RUNTIME         = buildRuntimeConfig();
-const SECRET_KEY      = Buffer.from(RUNTIME.tcpSecret);
 const TCP_PORT        = RUNTIME.tcpPort;
 const WEB_PORT        = RUNTIME.webPort;
 const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
+const RUNTIME_SECRETS = ensureRuntimeSecrets({ dataDir: DATA_DIR });
+const SECRET_KEY      = Buffer.from(RUNTIME_SECRETS.tcpSecret);
 const DB_FILE         = path.join(DATA_DIR, 'whitelist.json');
 const BAN_FILE        = path.join(DATA_DIR, 'bans.json');
 const LOG_FILE        = path.join(DATA_DIR, 'license.log');
@@ -49,6 +51,8 @@ const SETTINGS_FILE   = path.join(DATA_DIR, 'settings.json');
 const ADMIN_FILE      = path.join(DATA_DIR, 'admin.json');
 const RISK_FILE       = path.join(DATA_DIR, 'risk_events.json');
 const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
+RUNTIME.secretSources = RUNTIME_SECRETS.sources;
+RUNTIME.secretFile = RUNTIME_SECRETS.file;
 
 const AUTO_REGISTER   = true;
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
@@ -781,7 +785,7 @@ function clientIp(req) {
     return (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
 }
 const sessionParser = session({
-    secret: process.env.LICENSE_SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+    secret: RUNTIME_SECRETS.sessionSecret,
     resave: false, saveUninitialized: false,
     cookie: {
         maxAge: 8 * 60 * 60 * 1000,
