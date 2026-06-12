@@ -251,7 +251,6 @@
           <th>Tier</th>
           <th>Max Players</th>
           <th>Peak</th>
-          <th>Risk</th>
           <th>Trạng thái</th>
           <th>Hết hạn</th>
           <th>Ghi chú</th>
@@ -313,21 +312,6 @@
           <!-- Peak players -->
           <td style="color:#fbbf24;font-weight:700">
             <%= row.peak_players || 0 %>
-          </td>
-
-          <!-- Risk -->
-          <td>
-            <% var rk = row.risk || { level: 'none', score: 0 };
-               var rcls = rk.level === 'quarantine' || rk.level === 'high' ? 'pill-red'
-                      : rk.level === 'medium' ? 'risk-medium'
-                      : rk.level === 'low' ? 'pill-gray'
-                      : 'pill-green'; %>
-            <% if (rcls === 'risk-medium') { %>
-              <span class="pill" style="background:#451a03;color:#fbbf24"><%= rk.level %></span>
-            <% } else { %>
-              <span class="pill <%= rcls %>"><%= rk.level %></span>
-            <% } %>
-            <div style="font-size:.72rem;color:var(--muted);margin-top:3px"><%= rk.score %>/100</div>
           </td>
 
           <!-- Status -->

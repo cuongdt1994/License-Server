@@ -13,6 +13,7 @@ const {
     licenseKeyBootstrapEnabled,
     canBootstrapLicenseKey,
     canViewPortalLicense,
+    isValidMachineId,
     auditEvent,
     securityHeaders,
     isAgentScriptAuthorized,
@@ -24,6 +25,7 @@ const {
 
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settings.ejs'), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 {
     const session = {};
@@ -59,6 +61,15 @@ const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settin
     assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: null, justRegistered: true, enabled: true }), false);
     assert.strictEqual(canBootstrapLicenseKey({ license_key: '' }, { sentKey: null, justRegistered: false, enabled: true }), false);
     assert.strictEqual(canBootstrapLicenseKey({ license_key: 'ABC123' }, { sentKey: null, justRegistered: false, enabled: false }), false);
+}
+
+{
+    assert.strictEqual(isValidMachineId('00:0c:29:2f:71:4e|tghm174'), true);
+    assert.strictEqual(isValidMachineId('00-0C-29-2F-71-4E|tghm174'), true);
+    assert.strictEqual(isValidMachineId('00:0c:29:2f:711:4e|tghm174'), false);
+    assert.strictEqual(isValidMachineId('not-a-mac|tghm174'), false);
+    assert.strictEqual(isValidMachineId('00:0c:29:2f:71:4e'), false);
+    assert.strictEqual(isValidMachineId('00:0c:29:2f:71:4e|'), false);
 }
 
 {
@@ -138,6 +149,9 @@ const settingsView = fs.readFileSync(path.join(__dirname, '..', 'views', 'settin
     const logoutGetLine = serverSource.split('\n').find(line => line.includes("app.get('/logout'")) || '';
     assert.doesNotMatch(logoutGetLine, /req\.session\.destroy/);
     assert.match(serverSource, /app\.post\('\/logout'/);
+    assert.doesNotMatch(serverSource, /risk_manager|recordRisk|RISK_FILE|risk\.summarize|risk\.listEvents/);
+    assert.doesNotMatch(pkg.scripts.test, /risk_manager\.test/);
+    assert.doesNotMatch(serverSource, /Key: <code>/);
 }
 
 console.log('security tests passed');

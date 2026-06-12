@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/data_dir.test.js && node test/runtime_config.test.js && node test/runtime_secrets.test.js && node test/session_store.test.js && node test/deploy_manager.test.js && node test/pm2_config.test.js && node test/security.test.js && node test/setup_wizard.test.js && node test/ui_flash.test.js && node test/ui_machines_actions.test.js && node test/ui_settings_runtime.test.js && node test/upgrade_ui_ops.test.js && node test/risk_manager.test.js && node test/command_policy.test.js",
+    "test": "node test/data_dir.test.js && node test/runtime_config.test.js && node test/runtime_secrets.test.js && node test/session_store.test.js && node test/deploy_manager.test.js && node test/pm2_config.test.js && node test/security.test.js && node test/setup_wizard.test.js && node test/ui_flash.test.js && node test/ui_machines_actions.test.js && node test/ui_settings_runtime.test.js && node test/upgrade_ui_ops.test.js && node test/command_policy.test.js",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:restart": "pm2 reload ecosystem.config.js --update-env",
     "pm2:stop": "pm2 stop license-server",

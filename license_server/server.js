@@ -22,6 +22,7 @@ const {
     canAuthWithoutLicenseKey,
     licenseKeyBootstrapEnabled,
     canBootstrapLicenseKey,
+    isValidMachineId,
     canViewPortalLicense,
     consumeFlash,
     auditEvent,
@@ -32,7 +33,6 @@ const {
     normalizeAdminCredentials,
 } = require('./security');
 const agent     = require('./agent_manager');
-const risk      = require('./risk_manager');
 const commandPolicy = require('./command_policy');
 const { createDeployManager } = require('./deploy_manager');
 
@@ -54,7 +54,6 @@ const HISTORY_FILE    = path.join(DATA_DIR, 'history.json');
 const PLANS_FILE      = path.join(DATA_DIR, 'plans.json');
 const SETTINGS_FILE   = path.join(DATA_DIR, 'settings.json');
 const ADMIN_FILE      = path.join(DATA_DIR, 'admin.json');
-const RISK_FILE       = path.join(DATA_DIR, 'risk_events.json');
 const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
 const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
@@ -389,18 +388,6 @@ function dispatchWebhook(event, data) {
     }
 }
 
-function recordRisk(mid, type, details = {}) {
-    const result = risk.recordEvent(RISK_FILE, mid, type, details);
-    if (!result.event) return result.summary;
-
-    log('WARNING', `RISK ${result.summary.level.toUpperCase().padEnd(10)} [${mid}] type=${type} score=${result.summary.score}`);
-    if (result.crossed) {
-        sendTelegram(`<b>License Risk</b>\n<code>${mid}</code>\nLevel: ${result.summary.level}\nScore: ${result.summary.score}\nType: ${type}`);
-        dispatchWebhook('license.risk', { mid, type, details, summary: result.summary });
-    }
-    return result.summary;
-}
-
 function shellEnabled() {
     return loadSettings().advanced_shell_enabled === true;
 }
@@ -590,6 +577,11 @@ const tcpServer = net.createServer((socket) => {
         if (cmd === 'AUTH' && parts[1]) {
             const mid     = parts[1];
             const sentKey = parts[2] || null;
+            if (!isValidMachineId(mid)) {
+                socket.write(tcpEncrypt('DENY'));
+                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (invalid machine id)`);
+                tcpRlFail(ip); socket.end(); return;
+            }
             const db      = loadDB();
             let entry     = db[mid];
             let justRegistered = false;
@@ -609,7 +601,7 @@ const tcpServer = net.createServer((socket) => {
                 db[mid] = entry; saveDB(db);
                 justRegistered = true;
                 log('INFO', `AUTH AUTO   ${ip}  [${mid}]  key=${newKey}`);
-                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nKey: <code>${newKey}</code>`);
+                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nKey: ${newKey}`);
             }
 
             if (entry.revoked) {
@@ -626,7 +618,6 @@ const tcpServer = net.createServer((socket) => {
             if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
                 socket.write(tcpEncrypt('DENY'));
                 log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (missing key in strict mode)`);
-                recordRisk(mid, 'missing_key', { ip });
                 tcpRlFail(ip); socket.end(); return;
             }
 
@@ -646,12 +637,10 @@ const tcpServer = net.createServer((socket) => {
                 if (!validKey && !shouldBootstrapKey) {
                     socket.write(tcpEncrypt('DENY'));
                     log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
-                    recordRisk(mid, 'wrong_key', { ip });
                     tcpRlFail(ip); socket.end(); return;
                 }
                 if (shouldBootstrapKey) {
                     log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
-                    recordRisk(mid, 'key_bootstrap', { ip });
                 }
                 // Key cũ vẫn hợp lệ → gửi key mới xuống client lần này (qua AUTH OK payload bên dưới)
                 if (!shouldBootstrapKey && sentKey !== entry.license_key) {
@@ -667,7 +656,6 @@ const tcpServer = net.createServer((socket) => {
                 if (!allowed) {
                     socket.write(tcpEncrypt('DENY'));
                     log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (IP not whitelisted)`);
-                    recordRisk(mid, 'ip_not_whitelisted', { ip, allowed_ips: entry.allowed_ips });
                     tcpRlFail(ip); socket.end(); return;
                 }
             }
@@ -675,7 +663,6 @@ const tcpServer = net.createServer((socket) => {
             // Multi-IP detection
             if (active[mid] && active[mid].ip !== ip) {
                 log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
-                recordRisk(mid, 'multi_ip', { prev_ip: active[mid].ip, new_ip: ip });
                 sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
                 dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
             }
@@ -727,6 +714,11 @@ const tcpServer = net.createServer((socket) => {
         } else if (cmd === 'HB' && parts[1] && parts[2] !== undefined) {
             const mid = parts[1];
             const cnt = parseInt(parts[2]) || 0;
+            if (!isValidMachineId(mid)) {
+                socket.write(tcpEncrypt('DENY'));
+                log('WARNING', `HB DENY     ${ip}  [${mid}]  (invalid machine id)`);
+                tcpRlFail(ip); socket.end(); return;
+            }
             const db  = loadDB();
             const entry = db[mid];
 
@@ -776,7 +768,7 @@ const tcpServer = net.createServer((socket) => {
             pushStat(mid, cnt);
 
             if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
-                recordRisk(mid, 'heartbeat_ip_change', { prev_ip: active[mid].ip, new_ip: ip });
+                log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
             }
 
             // Trả về "OK <max>" và kèm "KEY:<key>" nếu có để client tự đồng bộ license.key
@@ -1023,7 +1015,6 @@ app.get('/machines', auth, (req, res) => {
             expiry:   expiryInfo(info),
             expired:  isExpired(info),
             currentPlayers: active[mid]?.players || 0,
-            risk:     risk.summarize(RISK_FILE, mid),
         }));
     res.render('machines', { rows, TIERS, plans: loadPlans(), flash: consumeFlash(req.session) });
 });
@@ -1040,6 +1031,10 @@ app.post('/add', auth, (req, res) => {
     const allowed_ips = ips_raw ? ips_raw.split(/[\n,]/).map(s => s.trim()).filter(Boolean) : [];
 
     if (!mid) { req.session.flash = { type: 'danger', msg: 'Machine ID trống.' }; return res.redirect('/machines'); }
+    if (!isValidMachineId(mid)) {
+        req.session.flash = { type: 'danger', msg: 'Machine ID không hợp lệ. MAC phải có dạng 00:0c:29:2f:71:4e|hostname.' };
+        return res.redirect('/machines');
+    }
     const db = loadDB();
     const license_key = gen_key ? generateLicenseKey() : null;
     db[mid] = {
@@ -1052,7 +1047,7 @@ app.post('/add', auth, (req, res) => {
         zombie: false,
     };
     saveDB(db);
-    const keyMsg = license_key ? ` | Key: <code>${license_key}</code>` : '';
+    const keyMsg = license_key ? ` | Key: ${license_key}` : '';
     req.session.flash = { type: 'success', msg: `Đã cấp: ${mid} (${TIERS[tier].label}, max ${maxPl})${keyMsg}` };
     log('INFO', `WEB ADD [${mid}] tier=${tier} max=${maxPl} key=${license_key || 'none'}`);
     res.redirect('/machines');
@@ -1574,8 +1569,6 @@ app.get('/machine/:mid', auth, (req, res) => {
         mid, entry, TIERS,
         isOnline: !!active[mid], live: active[mid] || null,
         agentInfo,
-        riskSummary: risk.summarize(RISK_FILE, mid),
-        riskEvents: risk.listEvents(RISK_FILE, mid).slice(-15).reverse(),
         safeActions: commandPolicy.getSafeActions(),
         shellEnabled: settings.advanced_shell_enabled === true,
         shellTimeout: commandPolicy.clampTimeout(settings.agent_shell_timeout || 120, 120),

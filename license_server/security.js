@@ -69,6 +69,16 @@ function canBootstrapLicenseKey(entry, { sentKey, justRegistered, enabled }) {
     return !String(sentKey || '').trim();
 }
 
+function isValidMachineId(mid) {
+    const text = String(mid || '').trim();
+    const sep = text.indexOf('|');
+    if (sep <= 0 || sep === text.length - 1) return false;
+    const mac = text.slice(0, sep);
+    const host = text.slice(sep + 1).trim();
+    if (!host || host.length > 128) return false;
+    return /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(mac);
+}
+
 function canViewPortalLicense(entry, providedKey) {
     const stored = String(entry?.license_key || '').trim();
     const provided = String(providedKey || '').trim();
@@ -116,6 +126,7 @@ module.exports = {
     canAuthWithoutLicenseKey,
     licenseKeyBootstrapEnabled,
     canBootstrapLicenseKey,
+    isValidMachineId,
     canViewPortalLicense,
     consumeFlash,
     auditEvent,
