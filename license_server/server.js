@@ -61,6 +61,45 @@ RUNTIME.secretFile = RUNTIME_SECRETS.file;
 
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
 const DEFAULT_PLAYERS = 5;
+
+// ── Safe max_players resolver ─────────────────────────────────────────────────
+// Luôn trả về số nguyên dương. Không bao giờ trả về 0.
+// Xử lý cả string "0" (truthy trong JS nên || không catch được).
+function getMaxPlayers(entry) {
+    if (!entry) return DEFAULT_PLAYERS;
+    if (entry.tier === 'unlimited') return 9999;
+    const mp = parseInt(entry.max_players, 10);
+    if (!Number.isFinite(mp) || mp <= 0) return DEFAULT_PLAYERS;
+    return mp;
+}
+
+// Quét và sửa toàn bộ DB: đảm bảo max_players luôn là number > 0
+function repairDBMaxPlayers() {
+    const db = loadDB();
+    let changed = false;
+    for (const [mid, entry] of Object.entries(db)) {
+        if (entry.tier === 'unlimited') continue;
+        const mp = parseInt(entry.max_players, 10);
+        if (!Number.isFinite(mp) || mp <= 0) {
+            entry.max_players = DEFAULT_PLAYERS;
+            changed = true;
+        } else if (typeof entry.max_players !== 'number') {
+            entry.max_players = mp;
+            changed = true;
+        }
+    }
+    if (changed) {
+        saveDB(db);
+        log('INFO', `DB repaired: fixed max_players → ${DEFAULT_PLAYERS} for entries with invalid/zero values`);
+    }
+}
+
+// WebSocket chỉ dùng cho dashboard live-update, không tham gia flow AUTH/HB.
+// Có thể tắt hoàn toàn qua settings nếu không cần.
+function isWebSocketEnabled() {
+    const s = loadSettings();
+    return s.disable_websocket !== true;
+}
 const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
 const MAX_HISTORY     = 1000;
 const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
@@ -451,7 +490,7 @@ function makeToken(mid, maxPl) {
 // ── WebSocket broadcast ───────────────────────────────────────────────────────
 let wss = null;
 function wsBroadcast(event, data) {
-    if (!wss) return;
+    if (!wss || !isWebSocketEnabled()) return;
     const msg = JSON.stringify({ event, data, ts: Date.now() });
     wss.clients.forEach(ws => {
         if (ws.readyState === WebSocket.OPEN) try { ws.send(msg); } catch {}
@@ -667,7 +706,7 @@ const tcpServer = net.createServer((socket) => {
                 dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
             }
 
-            const maxPl   = entry.tier === 'unlimited' ? 9999 : (entry.max_players || DEFAULT_PLAYERS);
+            const maxPl   = getMaxPlayers(entry);
             const token   = makeToken(mid, maxPl);
             // Cấp/lấy agent token để client tự cài agent điều khiển từ xa
             const agentTok = agent.getOrCreateToken(mid);
@@ -735,7 +774,7 @@ const tcpServer = net.createServer((socket) => {
                 log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`); socket.end(); return;
             }
 
-            const maxPl = entry.tier === 'unlimited' ? 9999 : (entry.max_players || DEFAULT_PLAYERS);
+            const maxPl = getMaxPlayers(entry);
             // KHÔNG revoke khi vượt quota — vì client gs sẽ _exit(1) làm sập
             // toàn bộ game server, mọi người bị kick về login. Chỉ alert.
             // Hard-limit thực sự đã được áp dụng phía gs (userlogin.cpp) tự
@@ -795,18 +834,23 @@ app.use((req, res, next) => {
     next();
 });
 
-// WebSocket server (dashboard live updates)
-wss = new WebSocket.Server({ noServer: true });
-wss.on('connection', (ws) => {
-    ws.on('error', () => {});
-    // Send current snapshot on connect
-    const db = loadDB();
-    const snapshot = Object.entries(active).map(([mid, info]) => {
-        const e = db[mid] || {};
-        return { mid, ...info, tier: e.tier || 'basic', max_players: e.tier === 'unlimited' ? 9999 : (e.max_players || 0) };
+// WebSocket server (dashboard live updates) — chỉ khởi tạo nếu không bị tắt trong settings
+if (isWebSocketEnabled()) {
+    wss = new WebSocket.Server({ noServer: true });
+    wss.on('connection', (ws) => {
+        ws.on('error', () => {});
+        // Send current snapshot on connect
+        const db = loadDB();
+        const snapshot = Object.entries(active).map(([mid, info]) => {
+            const e = db[mid] || {};
+            return { mid, ...info, tier: e.tier || 'basic', max_players: getMaxPlayers(e) };
+        });
+        try { ws.send(JSON.stringify({ event: 'init', data: snapshot, ts: Date.now() })); } catch {}
     });
-    try { ws.send(JSON.stringify({ event: 'init', data: snapshot, ts: Date.now() })); } catch {}
-});
+    log('INFO', 'WebSocket dashboard live-update enabled');
+} else {
+    log('INFO', 'WebSocket disabled via settings — dashboard will use HTTP polling only');
+}
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
@@ -990,7 +1034,7 @@ app.get('/', auth, (req, res) => {
     const db = loadDB();
     const rows = Object.entries(active).map(([mid, info]) => {
         const e   = db[mid] || {};
-        const maxPl = e.tier === 'unlimited' ? 9999 : (e.max_players || 0);
+        const maxPl = getMaxPlayers(e);
         return { mid, ...info, max_players: maxPl, tier: e.tier || 'basic', pct: maxPl ? Math.round((info.players || 0) / maxPl * 100) : 0 };
     }).sort((a, b) => b.players - a.players);
     res.render('dashboard', {
@@ -1054,6 +1098,8 @@ app.post('/add', auth, (req, res) => {
         allowed_ips: allowed_ips.length ? allowed_ips : undefined,
         zombie: false,
     };
+    // Luôn chuẩn hóa max_players trước khi lưu (phòng trường hợp string "0", v.v.)
+    db[mid].max_players = getMaxPlayers(db[mid]);
     saveDB(db);
     const keyMsg = license_key ? ` | Key: ${license_key}` : '';
     req.session.flash = { type: 'success', msg: `Đã cấp: ${mid} (${TIERS[tier].label}, max ${maxPl})${keyMsg}` };
@@ -1069,6 +1115,8 @@ app.post('/update-limit', auth, (req, res) => {
     const db    = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
     if (!isNaN(maxPl) && maxPl > 0) db[mid].max_players = maxPl;
+    // Luôn đảm bảo max_players không phải string hoặc ≤ 0 trước khi lưu
+    if (db[mid]) db[mid].max_players = getMaxPlayers(db[mid]);
     if (tier && TIERS[tier]) db[mid].tier = tier;
     if (exp !== undefined) db[mid].expires_at = exp || undefined;
     saveDB(db);
@@ -1466,6 +1514,15 @@ app.post('/settings/agent', auth, (req, res) => {
     res.redirect('/settings');
 });
 
+app.post('/settings/websocket', auth, (req, res) => {
+    const s = loadSettings();
+    s.disable_websocket = req.body.disable_websocket === '1';
+    saveSettings(s);
+    req.session.flash = { type: 'success', msg: s.disable_websocket ? 'WebSocket đã tắt — cần restart server để áp dụng.' : 'WebSocket đã bật — cần restart server để áp dụng.' };
+    log('INFO', `WEBSOCKET ${s.disable_websocket ? 'DISABLED' : 'ENABLED'} (restart required)`);
+    res.redirect('/settings');
+});
+
 // 2FA setup
 app.get('/settings/setup-2fa', auth, async (req, res) => {
     const secret = speakeasy.generateSecret({ name: 'License Manager', length: 20 });
@@ -1585,7 +1642,7 @@ app.post('/portal', (req, res) => {
     }
     portalRlClear(ip);
     const info = {
-        mid, tier: entry.tier || 'basic', max_players: entry.max_players,
+        mid, tier: entry.tier || 'basic', max_players: getMaxPlayers(entry),
         revoked: entry.revoked, expired: isExpired(entry),
         expiry: expiryInfo(entry), note: entry.note, added: entry.added,
         isOnline: !!active[mid], players: active[mid]?.players || 0,
@@ -1615,7 +1672,7 @@ app.get('/export/csv', auth, (req, res) => {
     const db   = loadDB();
     const head = 'machine_id,tier,max_players,peak_players,note,added,expires_at,revoked,expired,license_key\n';
     const rows = Object.entries(db).map(([mid, e]) =>
-        [mid, e.tier || 'basic', e.max_players || 0, e.peak_players || 0,
+        [mid, e.tier || 'basic', getMaxPlayers(e), e.peak_players || 0,
          e.note || '', e.added || '', e.expires_at || '',
          e.revoked ? 'yes' : 'no', isExpired(e) ? 'yes' : 'no', e.license_key || '']
         .map(v => `"${csvSafeCell(v).replace(/"/g, '""')}"`)
@@ -1904,8 +1961,13 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
     res.json(r);
 });
 
-// ── HTTP upgrade: chỉ còn dashboard /ws ─────────────────────────────────────
+// ── HTTP upgrade: WebSocket cho dashboard (chỉ khi được bật trong settings) ────
 httpServer.on('upgrade', (req, sock, head) => {
+    if (!isWebSocketEnabled()) {
+        sock.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+        sock.destroy();
+        return;
+    }
     if ((req.url || '') === '/ws') {
         sessionParser(req, {}, () => {
             if (!req.session?.loggedIn) {
@@ -1925,6 +1987,7 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
     log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
     doBackup(); // Backup on startup
+    repairDBMaxPlayers(); // Quét và sửa các entry có max_players lỗi
 });
 
 function shutdown(signal) {
