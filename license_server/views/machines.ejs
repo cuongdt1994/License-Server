@@ -581,7 +581,7 @@
       <div class="form-group" id="maxPlayersRow">
         <label>Số player tối đa</label>
         <input name="max_players" type="number" value="20" min="1" max="9999">
-        <div class="hint">Vượt giới hạn này → server tự tắt trong ≤5 phút</div>
+        <div class="hint">Vượt giới hạn này → client tự chặn login mới (không kick người chơi hiện tại)</div>
       </div>
 
       <!-- Expires at (tùy chọn) -->
@@ -669,7 +669,7 @@
     </div>
     <p style="font-size:.82rem;color:#fbbf24;margin-bottom:14px">
       <i class="bi bi-exclamation-triangle me-1"></i>
-      Tạo key mới sẽ <b>vô hiệu hóa key cũ ngay lập tức</b>. Server đang dùng key cũ sẽ bị từ chối ở lần AUTH tiếp theo.
+      Tạo key mới — key cũ vẫn được chấp nhận trong <b>24h</b> để các server đang chạy kịp đồng bộ key mới.
     </p>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button type="button" class="btn-cancel" data-modal-close="keyOverlay">Đóng</button>
@@ -1183,12 +1183,26 @@
       if (statusCell) {
         const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
         const players = data.players || 0;
-        statusCell.innerHTML =
-          '<span class="pill pill-green">● Online</span>' +
-          '<div style="font-size:.72rem;color:var(--muted);margin-top:3px">' + players + '/' + maxPl + ' players</div>';
-        // Restore sparkline opacity
+        row.setAttribute('data-sort-max', String(maxPl));
+        // Update pill
+        const pill = statusCell.querySelector('.pill');
+        if (pill) { pill.className = 'pill pill-green'; pill.textContent = '● Online'; }
+        // Update player count div (preserve sparkline SVG)
+        const playerDiv = statusCell.querySelector('div');
+        if (playerDiv) {
+          playerDiv.textContent = players + '/' + maxPl + ' players';
+        } else {
+          // No div yet — insert one before sparkline or at end
+          const svg = statusCell.querySelector('.sparkline-svg');
+          const div = document.createElement('div');
+          div.style.cssText = 'font-size:.72rem;color:var(--muted);margin-top:3px';
+          div.textContent = players + '/' + maxPl + ' players';
+          if (svg) statusCell.insertBefore(div, svg);
+          else statusCell.appendChild(div);
+        }
+        // Restore sparkline opacity and update max reference line
         const svg = statusCell.querySelector('.sparkline-svg');
-        if (svg) svg.style.opacity = '1';
+        if (svg) { svg.style.opacity = '1'; svg.dataset.max = String(maxPl); renderSparkline(svg); }
       }
     } else if (eventType === 'offline') {
       row.dataset.status = 'offline';
@@ -1203,12 +1217,14 @@
     } else if (eventType === 'hb') {
       const players = data.players || 0;
       const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
+      row.setAttribute('data-sort-max', String(maxPl));
       if (statusCell) {
         const playerDiv = statusCell.querySelector('div');
         if (playerDiv) playerDiv.textContent = players + '/' + maxPl + ' players';
         // Update sparkline — add new point
         const svg = statusCell.querySelector('.sparkline-svg');
         if (svg && svg.dataset.sparkline) {
+          svg.dataset.max = String(maxPl);
           svg.dataset.sparkline += ',' + Date.now() + ':' + players;
           // Trim to last 48 points
           const parts = svg.dataset.sparkline.split(',');

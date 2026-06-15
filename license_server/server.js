@@ -1076,6 +1076,7 @@ app.get('/machines', auth, (req, res) => {
             const sparkline = pts.length ? pts.map(p => p[0] + ':' + p[1]).join(',') : '';
             return {
                 mid, ...info,
+                max_players: getMaxPlayers(info),
                 isOnline: !!active[mid],
                 expiry:   expiryInfo(info),
                 expired:  isExpired(info),
@@ -1738,6 +1739,7 @@ app.get('/machine/:mid', auth, (req, res) => {
     const settings = loadSettings();
     res.render('machine_detail', {
         mid, entry, TIERS,
+        max_players: getMaxPlayers(entry),
         isOnline: !!active[mid], live: active[mid] || null,
         agentInfo,
         safeActions: commandPolicy.getSafeActions(),

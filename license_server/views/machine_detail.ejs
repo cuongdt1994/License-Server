@@ -86,7 +86,7 @@
     <div>
       <h4 style="margin:0"><i class="bi bi-hdd-network me-2" style="color:var(--primary)"></i><code><%= mid %></code></h4>
       <div class="text-muted mt-1" style="font-size:.85rem">
-        Tier: <%= TIERS[entry.tier || 'basic'].label %> · Max: <%= entry.max_players %> ·
+        Tier: <%= TIERS[entry.tier || 'basic'].label %> · Max: <%= max_players %> ·
         <% if (isOnline) { %><span class="pill pill-green">Online</span><% } else { %><span class="pill pill-gray">Offline</span><% } %>
         <% if (expired) { %> <span class="pill pill-red">Expired</span><% } %>
       </div>
@@ -255,7 +255,7 @@
         <% }) %>
       </div>
       <% if (!shellEnabled) { %>
-        <div style="color:#fbbf24;font-size:.85rem;margin-top:10px">Advanced shell dang tat trong Settings. Safe actions van hoat dong.</div>
+        <div style="color:#fbbf24;font-size:.85rem;margin-top:10px">Advanced shell đang tắt trong Settings. Safe actions vẫn hoạt động.</div>
       <% } %>
       <p style="font-size:.8rem;color:var(--muted);margin-bottom:8px">
         Gửi script bash xuống agent. Output sẽ trả về sau khi lệnh chạy xong (timeout ~5 phút).
@@ -359,7 +359,7 @@ async function runExec() {
 }
 
 async function runSafeAction(action) {
-  document.getElementById('execStatus').textContent = 'Dang gui safe action...';
+  document.getElementById('execStatus').textContent = 'Đang gửi safe action...';
   appendOut('\n$ safe-action ' + action);
   try {
     const r = await fetch('/api/machine/' + encodeURIComponent(MID) + '/safe-action', {
@@ -373,7 +373,7 @@ async function runSafeAction(action) {
       return;
     }
     const { id, label } = await r.json();
-    document.getElementById('execStatus').textContent = 'Dang cho ket qua...';
+    document.getElementById('execStatus').textContent = 'Đang chờ kết quả...';
     const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
       await new Promise(rs => setTimeout(rs, 1500));
