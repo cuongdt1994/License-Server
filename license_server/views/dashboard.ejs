@@ -404,6 +404,11 @@
       const key = srv.mid.replace(/[^a-zA-Z0-9]/g, '_');
       const existing = oldRows[srv.mid];
       if (existing) {
+        // Reset fade-out animation state if this row was being animated out
+        existing.style.opacity = '1';
+        existing.style.transition = '';
+        if (existing._offTimer1) { clearTimeout(existing._offTimer1); existing._offTimer1 = null; }
+        if (existing._offTimer2) { clearTimeout(existing._offTimer2); existing._offTimer2 = null; }
         // Update existing row
         updateRowData(existing, srv);
         fragment.appendChild(existing);
@@ -445,7 +450,13 @@
   function handleServerOnline(srv) {
     if (!srv || !srv.mid) return;
     if (serverRows[srv.mid]) {
-      updateRowData(serverRows[srv.mid], srv);
+      // Cancel any pending fade-out animation (server came back before timeout)
+      const tr = serverRows[srv.mid];
+      tr.style.opacity = '1';
+      tr.style.transition = '';
+      if (tr._offTimer1) { clearTimeout(tr._offTimer1); tr._offTimer1 = null; }
+      if (tr._offTimer2) { clearTimeout(tr._offTimer2); tr._offTimer2 = null; }
+      updateRowData(tr, srv);
       return;
     }
     if (emptyState) emptyState.style.display = 'none';
@@ -460,11 +471,16 @@
     if (!data || !data.mid) return;
     const tr = serverRows[data.mid];
     if (tr && tbody) {
+      // Clear any previous pending timers
+      if (tr._offTimer1) { clearTimeout(tr._offTimer1); tr._offTimer1 = null; }
+      if (tr._offTimer2) { clearTimeout(tr._offTimer2); tr._offTimer2 = null; }
       tr.style.opacity = '0.4';
       tr.style.transition = 'opacity .5s';
-      setTimeout(() => {
+      tr._offTimer1 = setTimeout(() => {
+        tr._offTimer1 = null;
         tr.style.opacity = '0';
-        setTimeout(() => {
+        tr._offTimer2 = setTimeout(() => {
+          tr._offTimer2 = null;
           tr.remove();
           delete serverRows[data.mid];
           document.querySelector('.refresh-info span').textContent = String(Object.keys(serverRows).length);

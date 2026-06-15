@@ -78,7 +78,10 @@ function repairDBMaxPlayers() {
     const db = loadDB();
     let changed = false;
     for (const [mid, entry] of Object.entries(db)) {
-        if (entry.tier === 'unlimited') continue;
+        if (entry.tier === 'unlimited') {
+            if (entry.max_players !== 9999) { entry.max_players = 9999; changed = true; }
+            continue;
+        }
         const mp = parseInt(entry.max_players, 10);
         if (!Number.isFinite(mp) || mp <= 0) {
             entry.max_players = DEFAULT_PLAYERS;
@@ -1348,7 +1351,7 @@ app.post('/bulk-tier', auth, (req, res) => {
     const db = loadDB();
     let done = 0;
     for (const mid of mids) {
-        if (db[mid]) { db[mid].tier = tier; done++; }
+        if (db[mid]) { db[mid].tier = tier; db[mid].max_players = getMaxPlayers(db[mid]); done++; }
     }
     saveDB(db);
     req.session.flash = { type: 'success', msg: `Đã đổi ${done}/${mids.length} máy sang ${TIERS[tier].label}.` };
@@ -1525,7 +1528,7 @@ app.post('/settings/agent', auth, (req, res) => {
     s.advanced_shell_enabled = req.body.advanced_shell_enabled === '1';
     s.agent_shell_timeout = commandPolicy.clampTimeout(req.body.agent_shell_timeout || 120, 120);
     saveSettings(s);
-    req.session.flash = { type: 'success', msg: 'Da luu cai dat agent command.' };
+    req.session.flash = { type: 'success', msg: 'Đã lưu cài đặt agent command.' };
     res.redirect('/settings');
 });
 
