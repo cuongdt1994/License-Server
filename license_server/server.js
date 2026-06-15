@@ -7,7 +7,6 @@ const fs        = require('fs');
 const path      = require('path');
 const express   = require('express');
 const session   = require('express-session');
-const WebSocket = require('ws');
 const multer    = require('multer');
 const speakeasy = require('speakeasy');
 const QRCode    = require('qrcode');
@@ -97,12 +96,6 @@ function repairDBMaxPlayers() {
     }
 }
 
-// WebSocket chỉ dùng cho dashboard live-update, không tham gia flow AUTH/HB.
-// Có thể tắt hoàn toàn qua settings nếu không cần.
-function isWebSocketEnabled() {
-    const s = loadSettings();
-    return s.disable_websocket !== true;
-}
 const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
 const MAX_HISTORY     = 1000;
 const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
@@ -490,15 +483,8 @@ function makeToken(mid, maxPl) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`${mid}|${maxPl}`).digest('hex');
 }
 
-// ── WebSocket broadcast ───────────────────────────────────────────────────────
-let wss = null;
-function wsBroadcast(event, data) {
-    if (!wss || !isWebSocketEnabled()) return;
-    const msg = JSON.stringify({ event, data, ts: Date.now() });
-    wss.clients.forEach(ws => {
-        if (ws.readyState === WebSocket.OPEN) try { ws.send(msg); } catch {}
-    });
-}
+// ── WebSocket broadcast (đã gỡ bỏ — không dùng nữa) ───────────────────────────
+function wsBroadcast(event, data) { /* no-op: WebSocket đã bị xóa */ }
 
 // ── Offline detector (5 min timeout) ─────────────────────────────────────────
 setInterval(() => {
@@ -849,24 +835,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// WebSocket server (dashboard live updates) — chỉ khởi tạo nếu không bị tắt trong settings
-if (isWebSocketEnabled()) {
-    wss = new WebSocket.Server({ noServer: true });
-    wss.on('connection', (ws) => {
-        ws.on('error', () => {});
-        // Send current snapshot on connect
-        const db = loadDB();
-        const snapshot = Object.entries(active).map(([mid, info]) => {
-            const e = db[mid] || {};
-            return { mid, ...info, tier: e.tier || 'basic', max_players: getMaxPlayers(e) };
-        });
-        try { ws.send(JSON.stringify({ event: 'init', data: snapshot, ts: Date.now() })); } catch {}
-    });
-    log('INFO', 'WebSocket dashboard live-update enabled');
-} else {
-    log('INFO', 'WebSocket disabled via settings — dashboard will use HTTP polling only');
-}
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true }));
@@ -1066,14 +1034,9 @@ app.get('/', auth, (req, res) => {
 // ── Machines ──────────────────────────────────────────────────────────────────
 app.get('/machines', auth, (req, res) => {
     const db = loadDB();
-    const stats = loadStats();
     const rows = Object.entries(db)
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([mid, info]) => {
-            // Build sparkline data: last 48 data points, compact for HTML
-            const pts = (stats[mid] || []).slice(-48);
-            // Convert to compact string: "ts1:v1,ts2:v2,..."
-            const sparkline = pts.length ? pts.map(p => p[0] + ':' + p[1]).join(',') : '';
             return {
                 mid, ...info,
                 max_players: getMaxPlayers(info),
@@ -1081,7 +1044,6 @@ app.get('/machines', auth, (req, res) => {
                 expiry:   expiryInfo(info),
                 expired:  isExpired(info),
                 currentPlayers: active[mid]?.players || 0,
-                sparkline,
             };
         });
     res.render('machines', { rows, TIERS, plans: loadPlans(), flash: consumeFlash(req.session) });
@@ -1533,14 +1495,6 @@ app.post('/settings/agent', auth, (req, res) => {
     res.redirect('/settings');
 });
 
-app.post('/settings/websocket', auth, (req, res) => {
-    const s = loadSettings();
-    s.disable_websocket = req.body.disable_websocket === '1';
-    saveSettings(s);
-    req.session.flash = { type: 'success', msg: s.disable_websocket ? 'WebSocket đã tắt — cần restart server để áp dụng.' : 'WebSocket đã bật — cần restart server để áp dụng.' };
-    log('INFO', `WEBSOCKET ${s.disable_websocket ? 'DISABLED' : 'ENABLED'} (restart required)`);
-    res.redirect('/settings');
-});
 
 // 2FA setup
 app.get('/settings/setup-2fa', auth, async (req, res) => {
@@ -1981,27 +1935,6 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
     res.json(r);
 });
 
-// ── HTTP upgrade: WebSocket cho dashboard (chỉ khi được bật trong settings) ────
-httpServer.on('upgrade', (req, sock, head) => {
-    if (!isWebSocketEnabled()) {
-        sock.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-        sock.destroy();
-        return;
-    }
-    if ((req.url || '') === '/ws') {
-        sessionParser(req, {}, () => {
-            if (!req.session?.loggedIn) {
-                sock.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-                sock.destroy();
-                return;
-            }
-            wss.handleUpgrade(req, sock, head, (ws) => wss.emit('connection', ws, req));
-        });
-    } else {
-        sock.destroy();
-    }
-});
-
 // ── Start ─────────────────────────────────────────────────────────────────────
 httpServer.listen(WEB_PORT, BIND_HOST, () => {
     log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
@@ -2014,7 +1947,6 @@ function shutdown(signal) {
     log('INFO', `${signal} received, shutting down gracefully...`);
     const forceExit = setTimeout(() => process.exit(1), 10000);
     forceExit.unref();
-    try { wss?.close(); } catch {}
     tcpServer.close(() => {
         httpServer.close(() => {
             log('INFO', 'Shutdown complete');

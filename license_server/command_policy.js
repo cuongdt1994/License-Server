@@ -61,7 +61,7 @@ ls -ld "/$ServerDir" 2>/dev/null || true
         timeoutSec: 20,
         build: ({ serverDir, lines }) => `#!/bin/bash
 set -u
-LOG="/${_q(serverDir)}/logs/gs01.log"
+LOG="/home/logs/gs01.log"
 echo "==> $LOG"
 if [ -r "$LOG" ]; then tail -n ${_lines(lines)} "$LOG"; else echo "[ERR] log not readable: $LOG"; exit 2; fi
 `,
@@ -85,7 +85,7 @@ if [ -r "$LOG" ]; then tail -n ${_lines(lines)} "$LOG"; else echo "[ERR] log not
 set -u
 ServerDir='${_q(serverDir)}'
 df -h /
-du -sh "/$ServerDir" "/$ServerDir/logs" 2>/dev/null || true
+du -sh "/$ServerDir" "/home/logs" 2>/dev/null || true
 `,
     },
     {

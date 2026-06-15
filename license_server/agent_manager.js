@@ -220,7 +220,7 @@ function buildStartScript(serverDir) {
     serverDir = sanitizeServerDir(serverDir);
     return `#!/bin/bash
 ServerDir='${serverDir}'
-LOGS="/$ServerDir/logs"
+LOGS="/home/logs"
 mkdir -p "$LOGS"
 
 run_svc() {

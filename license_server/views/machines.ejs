@@ -110,11 +110,6 @@
     th.sortable:hover { color:#fff; background:#1e2a44; }
     th.sortable .sort-arrow { position:absolute; right:6px; font-size:.65rem; opacity:.4; }
     th.sortable.sorted .sort-arrow { opacity:1; color:var(--primary); }
-    /* Sparkline */
-    .sparkline-svg { width:80px; height:28px; vertical-align:middle; }
-    .sparkline-svg line { stroke:#374151; stroke-width:0.5; }
-    .sparkline-svg polyline { fill:none; stroke:var(--primary); stroke-width:1.5; stroke-linejoin:round; stroke-linecap:round; }
-    .no-sparkline { font-size:.68rem; color:var(--muted); font-style:italic; }
     /* Renew presets */
     .preset-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
     .preset-btn { background:transparent; color:var(--text); border:1px solid var(--border);
@@ -405,16 +400,8 @@
               <div style="font-size:.72rem;color:var(--muted);margin-top:3px">
                 <%= row.currentPlayers %>/<%= row.max_players %> players
               </div>
-              <% if (row.sparkline) { %>
-                <svg class="sparkline-svg" data-sparkline="<%= row.sparkline %>" data-max="<%= row.max_players %>"
-                     style="margin-top:3px" viewBox="0 0 80 28" preserveAspectRatio="none"></svg>
-              <% } %>
             <% } else { %>
               <span class="pill pill-gray">Offline</span>
-              <% if (row.sparkline) { %>
-                <svg class="sparkline-svg" data-sparkline="<%= row.sparkline %>" data-max="<%= row.max_players %>"
-                     style="margin-top:3px;opacity:.5" viewBox="0 0 80 28" preserveAspectRatio="none"></svg>
-              <% } %>
             <% } %>
           </td>
 
@@ -981,41 +968,6 @@
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Sparkline rendering
-  // ═══════════════════════════════════════════════════════════════════════════
-  function renderSparkline(svg) {
-    const raw = svg.dataset.sparkline;
-    if (!raw) return;
-    const pairs = raw.split(',').map(p => {
-      const [ts, v] = p.split(':');
-      return { ts: parseInt(ts), v: parseInt(v) };
-    }).filter(p => !isNaN(p.v));
-    if (pairs.length < 2) return;
-
-    const maxPlayers = parseInt(svg.dataset.max) || 20;
-    const maxVal = Math.max(maxPlayers, ...pairs.map(p => p.v));
-    const minVal = 0;
-    const w = 80, h = 28, pad = 2;
-    const xScale = (i) => pad + (i / (pairs.length - 1)) * (w - 2 * pad);
-    const yScale = (v) => h - pad - ((v - minVal) / (maxVal - minVal || 1)) * (h - 2 * pad);
-
-    // Build polyline points
-    const points = pairs.map((p, i) => xScale(i) + ',' + yScale(p.v)).join(' ');
-
-    // Create SVG content
-    let html = '';
-    // Baseline at 0
-    html += '<line x1="' + pad + '" y1="' + yScale(0) + '" x2="' + (w - pad) + '" y2="' + yScale(0) + '" stroke="#374151" stroke-width="0.5" stroke-dasharray="2,2"/>';
-    // Max line
-    html += '<line x1="' + pad + '" y1="' + yScale(maxPlayers) + '" x2="' + (w - pad) + '" y2="' + yScale(maxPlayers) + '" stroke="#374151" stroke-width="0.5" stroke-dasharray="1,3"/>';
-    // Data line
-    html += '<polyline points="' + points + '"/>';
-
-    svg.innerHTML = html;
-  }
-
-  document.querySelectorAll('.sparkline-svg').forEach(renderSparkline);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Renew presets (single machine)
@@ -1120,126 +1072,6 @@
     ov.addEventListener('click', e => { if (e.target === ov) hideOverlay(ov.id); });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // WebSocket live updates — real-time status & player counts
-  // ═══════════════════════════════════════════════════════════════════════════
-  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = wsProto + '//' + location.host + '/ws';
-  let wsSocket = null, wsReconnect = null;
-
-  function connectMachineWS() {
-    if (wsSocket && wsSocket.readyState === WebSocket.OPEN) return;
-    try { wsSocket = new WebSocket(wsUrl); } catch (e) { scheduleMachineWS(); return; }
-
-    wsSocket.onopen = () => {
-      const indicator = document.querySelector('.table-hint');
-      if (indicator) indicator.innerHTML = indicator.innerHTML.replace(/.*/, '<span style="color:#34d399">● Live</span>');
-    };
-
-    wsSocket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.event === 'init') {
-          // Snapshot đầy đủ khi WS vừa connect — đồng bộ toàn bộ trạng thái
-          const snapshot = Array.isArray(msg.data) ? msg.data : [];
-          snapshot.forEach(function(srv) {
-            if (srv && srv.mid) updateMachineRow(srv, 'online');
-          });
-        } else if (msg.event === 'machine.online') updateMachineRow(msg.data || msg, 'online');
-        else if (msg.event === 'machine.offline') updateMachineRow(msg.data || msg, 'offline');
-        else if (msg.event === 'machine.hb') updateMachineRow(msg.data || msg, 'hb');
-      } catch (e) {}
-    };
-
-    wsSocket.onclose = () => { scheduleMachineWS(); };
-    wsSocket.onerror = () => { wsSocket?.close(); };
-  }
-
-  function scheduleMachineWS() {
-    if (wsReconnect) return;
-    wsReconnect = setTimeout(() => { wsReconnect = null; connectMachineWS(); }, 5000);
-  }
-
-  function updateMachineRow(data, eventType) {
-    if (!data || !data.mid) return;
-    // Find row by MID
-    const row = machineRows.find(r => {
-      const code = r.querySelector('code');
-      return code && code.textContent.trim() === data.mid;
-    });
-    if (!row) return;
-
-    const statusCell = row.querySelector('td:nth-child(6)'); // Status column
-    const peakCell = row.querySelector('td:nth-child(5)');   // Peak column
-
-    if (eventType === 'online') {
-      row.dataset.status = 'online';
-      row.setAttribute('data-sort-status', 'online');
-      // Update tier if provided
-      if (data.tier) {
-        row.dataset.tier = data.tier;
-        row.setAttribute('data-sort-tier', data.tier);
-      }
-      if (statusCell) {
-        const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
-        const players = data.players || 0;
-        row.setAttribute('data-sort-max', String(maxPl));
-        // Update pill
-        const pill = statusCell.querySelector('.pill');
-        if (pill) { pill.className = 'pill pill-green'; pill.textContent = '● Online'; }
-        // Update player count div (preserve sparkline SVG)
-        const playerDiv = statusCell.querySelector('div');
-        if (playerDiv) {
-          playerDiv.textContent = players + '/' + maxPl + ' players';
-        } else {
-          // No div yet — insert one before sparkline or at end
-          const svg = statusCell.querySelector('.sparkline-svg');
-          const div = document.createElement('div');
-          div.style.cssText = 'font-size:.72rem;color:var(--muted);margin-top:3px';
-          div.textContent = players + '/' + maxPl + ' players';
-          if (svg) statusCell.insertBefore(div, svg);
-          else statusCell.appendChild(div);
-        }
-        // Restore sparkline opacity and update max reference line
-        const svg = statusCell.querySelector('.sparkline-svg');
-        if (svg) { svg.style.opacity = '1'; svg.dataset.max = String(maxPl); renderSparkline(svg); }
-      }
-    } else if (eventType === 'offline') {
-      row.dataset.status = 'offline';
-      row.setAttribute('data-sort-status', 'offline');
-      if (statusCell) {
-        // Keep existing info but change pill
-        const pill = statusCell.querySelector('.pill');
-        if (pill) { pill.className = 'pill pill-gray'; pill.textContent = 'Offline'; }
-        const svg = statusCell.querySelector('.sparkline-svg');
-        if (svg) svg.style.opacity = '0.5';
-      }
-    } else if (eventType === 'hb') {
-      const players = data.players || 0;
-      const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
-      row.setAttribute('data-sort-max', String(maxPl));
-      if (statusCell) {
-        const playerDiv = statusCell.querySelector('div');
-        if (playerDiv) playerDiv.textContent = players + '/' + maxPl + ' players';
-        // Update sparkline — add new point
-        const svg = statusCell.querySelector('.sparkline-svg');
-        if (svg && svg.dataset.sparkline) {
-          svg.dataset.max = String(maxPl);
-          svg.dataset.sparkline += ',' + Date.now() + ':' + players;
-          // Trim to last 48 points
-          const parts = svg.dataset.sparkline.split(',');
-          if (parts.length > 48) svg.dataset.sparkline = parts.slice(-48).join(',');
-          renderSparkline(svg);
-        }
-      }
-      if (peakCell && data.players > parseInt(peakCell.textContent || '0')) {
-        peakCell.textContent = String(data.players);
-        row.setAttribute('data-sort-peak', String(data.players));
-      }
-    }
-  }
-
-  connectMachineWS();
 </script>
 </body>
 </html>

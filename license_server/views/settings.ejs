@@ -263,33 +263,6 @@
     </form>
   </div>
 
-  <!-- WebSocket (Dashboard live update) -->
-  <div class="section">
-    <div class="section-title"><i class="bi bi-lightning-charge"></i>Dashboard Live Update (WebSocket)</div>
-    <p style="font-size:.82rem;color:var(--muted);margin-bottom:14px">
-      WebSocket chỉ dùng để cập nhật real-time trên trang Dashboard và Machines.
-      <b>Không tham gia vào flow AUTH/HB</b> — license core hoạt động hoàn toàn qua TCP.
-      Tắt WebSocket nếu không cần live update để giảm tài nguyên và tăng độ ổn định.
-    </p>
-    <form method="POST" action="/settings/websocket">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-      <div class="form-group">
-        <label>WebSocket</label>
-        <select name="disable_websocket">
-          <option value="0" <%= settings.disable_websocket === true ? '' : 'selected' %>>Enabled (live update)</option>
-          <option value="1" <%= settings.disable_websocket === true ? 'selected' : '' %>>Disabled (HTTP polling only)</option>
-        </select>
-        <div class="hint">
-          <% if (settings.disable_websocket === true) { %>
-            <span style="color:#fbbf24">⚠ WebSocket đang tắt. Dashboard sẽ không tự động cập nhật — cần reload trang thủ công.</span>
-          <% } else { %>
-            WebSocket đang bật. Dashboard tự động cập nhật khi có server online/offline hoặc heartbeat mới.
-          <% } %>
-        </div>
-      </div>
-      <button type="submit" class="btn-primary"><i class="bi bi-save me-1"></i>Lưu</button>
-    </form>
-  </div>
 
   <!-- 2FA -->
   <div class="section">
