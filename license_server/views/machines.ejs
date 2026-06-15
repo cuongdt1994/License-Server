@@ -1175,10 +1175,11 @@
         row.setAttribute('data-sort-tier', data.tier);
       }
       if (statusCell) {
-        const maxPl = parseInt(row.getAttribute('data-sort-max')) || 20;
+        const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
+        const players = data.players || 0;
         statusCell.innerHTML =
           '<span class="pill pill-green">● Online</span>' +
-          '<div style="font-size:.72rem;color:var(--muted);margin-top:3px">0/' + maxPl + ' players</div>';
+          '<div style="font-size:.72rem;color:var(--muted);margin-top:3px">' + players + '/' + maxPl + ' players</div>';
         // Restore sparkline opacity
         const svg = statusCell.querySelector('.sparkline-svg');
         if (svg) svg.style.opacity = '1';
