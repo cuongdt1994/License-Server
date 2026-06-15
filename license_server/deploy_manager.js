@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const HISTORY_LIMIT = 10;
+const HISTORY_LIMIT = 20;
 
 function defaultRunCommand(cwd, timeoutMs) {
     return (cmd, args) => new Promise(resolve => {

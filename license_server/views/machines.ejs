@@ -1169,8 +1169,8 @@
     });
     if (!row) return;
 
-    const statusCell = row.querySelector('td:nth-child(7)'); // Status column (col 7 with checkbox)
-    const peakCell = row.querySelector('td:nth-child(6)');   // Peak column
+    const statusCell = row.querySelector('td:nth-child(6)'); // Status column
+    const peakCell = row.querySelector('td:nth-child(5)');   // Peak column
 
     if (eventType === 'online') {
       row.dataset.status = 'online';

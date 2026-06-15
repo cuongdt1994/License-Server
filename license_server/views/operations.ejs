@@ -245,7 +245,7 @@
     <% if (deployStatus && deployStatus.history && deployStatus.history.length) { %>
       <div class="deploy-steps">
         <div class="section-title"><i class="bi bi-clock-history"></i>Lịch sử cập nhật</div>
-        <% deployStatus.history.forEach(item => { %>
+        <% deployStatus.history.slice(0, 10).forEach(item => { %>
           <div class="deploy-step">
             <div class="deploy-step-head">
               <strong><%= item.type === 'rollback' ? 'Rollback' : (item.type === 'restart' ? 'Restart PM2' : 'Cập nhật từ Git') %></strong>

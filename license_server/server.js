@@ -686,21 +686,15 @@ const tcpServer = net.createServer((socket) => {
             socket.write(tcpEncrypt(okPayload));
 
             const wasOnline = !!active[mid];
-            // Khôi phục player count: ưu tiên active cũ → last_players trong DB → 0
-            const restoredPlayers = active[mid]?.players || entry.last_players || 0;
             active[mid] = {
-                ip, players: restoredPlayers,
+                ip, players: active[mid]?.players || 0,
                 last_seen: now(), uptime_start: active[mid]?.uptime_start || now(),
             };
-            const currentPlayers = active[mid].players; // giữ lại player count từ lần HB cuối (nếu reconnect)
             if (!wasOnline) {
                 pushHistory({ mid, event: 'online', ip });
                 sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
                 dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
-                wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: currentPlayers });
-            } else {
-                // Vẫn broadcast để cập nhật UI (VD: IP thay đổi, tier thay đổi...)
-                wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: currentPlayers });
+                wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: 0 });
             }
 
             // Clear zombie flag
@@ -770,7 +764,6 @@ const tcpServer = net.createServer((socket) => {
             }
 
             entry.last_hb_ts = Date.now();
-            entry.last_players = cnt;  // lưu player count cuối cùng để khôi phục khi reconnect
             db[mid] = entry; saveDB(db);
             pushStat(mid, cnt);
 
