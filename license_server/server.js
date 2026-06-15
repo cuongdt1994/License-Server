@@ -1126,9 +1126,12 @@ app.post('/update-limit', auth, (req, res) => {
     const exp   = req.body.expires_at;
     const db    = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
-    if (!isNaN(maxPl) && maxPl > 0) db[mid].max_players = maxPl;
-    // Luôn đảm bảo max_players không phải string hoặc ≤ 0 trước khi lưu
-    if (db[mid]) db[mid].max_players = getMaxPlayers(db[mid]);
+    if (!isNaN(maxPl) && maxPl > 0) {
+        db[mid].max_players = maxPl;
+    } else if (db[mid]) {
+        // Chỉ dùng getMaxPlayers làm fallback nếu user không tự set max_players
+        db[mid].max_players = getMaxPlayers(db[mid]);
+    }
     if (tier && TIERS[tier]) db[mid].tier = tier;
     if (exp !== undefined) db[mid].expires_at = exp || undefined;
     saveDB(db);
