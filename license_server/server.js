@@ -594,14 +594,14 @@ const tcpServer = net.createServer((socket) => {
                 }
                 const newKey = generateLicenseKey();
                 entry = {
-                    max_players: DEFAULT_PLAYERS, tier: 'trial', trial_days: 7,
+                    max_players: 10, tier: 'basic',
                     note: 'Auto-registered', added: now(), revoked: false, auto: true,
                     peak_players: 0, license_key: newKey, zombie: false,
                 };
                 db[mid] = entry; saveDB(db);
                 justRegistered = true;
-                log('INFO', `AUTH AUTO   ${ip}  [${mid}]  key=${newKey}`);
-                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nKey: ${newKey}`);
+                log('INFO', `AUTH AUTO   ${ip}  [${mid}]  tier=basic max=10  key=${newKey}`);
+                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: 10 players · Không giới hạn ngày\nKey: ${newKey}`);
             }
 
             if (entry.revoked) {
