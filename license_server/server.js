@@ -1007,15 +1007,23 @@ app.get('/', auth, (req, res) => {
 // ── Machines ──────────────────────────────────────────────────────────────────
 app.get('/machines', auth, (req, res) => {
     const db = loadDB();
+    const stats = loadStats();
     const rows = Object.entries(db)
         .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([mid, info]) => ({
-            mid, ...info,
-            isOnline: !!active[mid],
-            expiry:   expiryInfo(info),
-            expired:  isExpired(info),
-            currentPlayers: active[mid]?.players || 0,
-        }));
+        .map(([mid, info]) => {
+            // Build sparkline data: last 48 data points, compact for HTML
+            const pts = (stats[mid] || []).slice(-48);
+            // Convert to compact string: "ts1:v1,ts2:v2,..."
+            const sparkline = pts.length ? pts.map(p => p[0] + ':' + p[1]).join(',') : '';
+            return {
+                mid, ...info,
+                isOnline: !!active[mid],
+                expiry:   expiryInfo(info),
+                expired:  isExpired(info),
+                currentPlayers: active[mid]?.players || 0,
+                sparkline,
+            };
+        });
     res.render('machines', { rows, TIERS, plans: loadPlans(), flash: consumeFlash(req.session) });
 });
 
@@ -1195,6 +1203,94 @@ app.post('/transfer', auth, (req, res) => {
     pushHistory({ mid: newMid, event: 'transfer', ip: active[newMid]?.ip || '—', reason: `from ${oldMid}` });
     req.session.flash = { type: 'success', msg: `Đã transfer ${oldMid} → ${newMid}` };
     log('INFO', `WEB TRANSFER [${oldMid}] → [${newMid}]`); res.redirect('/machines');
+});
+
+// ── Bulk actions ──────────────────────────────────────────────────────────────
+function parseMidsFromBody(body) {
+    const raw = body.mids;
+    if (typeof raw === 'string') {
+        try { return JSON.parse(raw); } catch { return raw.split(',').map(s => s.trim()).filter(Boolean); }
+    }
+    if (Array.isArray(raw)) return raw.map(s => String(s).trim()).filter(Boolean);
+    return [];
+}
+
+app.post('/bulk-revoke', auth, (req, res) => {
+    const mids = parseMidsFromBody(req.body);
+    if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
+    const db = loadDB();
+    let done = 0;
+    for (const mid of mids) {
+        if (db[mid] && !db[mid].revoked) { db[mid].revoked = true; done++; }
+    }
+    saveDB(db);
+    req.session.flash = { type: 'success', msg: `Đã revoke ${done}/${mids.length} máy.` };
+    log('INFO', `WEB BULK-REVOKE ${done}/${mids.length}`);
+    res.redirect('/machines');
+});
+
+app.post('/bulk-renew', auth, (req, res) => {
+    const mids = parseMidsFromBody(req.body);
+    const days = parseInt(req.body.days) || 30;
+    if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
+    const db = loadDB();
+    let done = 0;
+    for (const mid of mids) {
+        const entry = db[mid];
+        if (!entry) continue;
+        const base = entry.expires_at && new Date(entry.expires_at + 'T23:59:59') > new Date()
+            ? new Date(entry.expires_at + 'T23:59:59')
+            : new Date();
+        base.setDate(base.getDate() + days);
+        entry.expires_at = base.toISOString().slice(0, 10);
+        entry.revoked = false;
+        done++;
+    }
+    saveDB(db);
+    req.session.flash = { type: 'success', msg: `Đã gia hạn ${done}/${mids.length} máy +${days} ngày.` };
+    log('INFO', `WEB BULK-RENEW ${done}/${mids.length} +${days}d`);
+    res.redirect('/machines');
+});
+
+app.post('/bulk-delete', auth, (req, res) => {
+    const mids = parseMidsFromBody(req.body);
+    if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
+    const db = loadDB();
+    let done = 0;
+    for (const mid of mids) {
+        if (!db[mid]) continue;
+        delete db[mid];
+        try { agent.uninstall(mid); } catch {}
+        if (active[mid]) { wsBroadcast('machine.offline', { mid }); delete active[mid]; }
+        try {
+            const stats = loadStats();
+            if (stats[mid]) { delete stats[mid]; saveJsonPrivate(STATS_FILE, stats, false); }
+        } catch {}
+        pushHistory({ mid, event: 'deleted', ip: '—', reason: 'bulk delete' });
+        done++;
+    }
+    saveDB(db);
+    req.session.flash = { type: 'success', msg: `Đã xóa ${done}/${mids.length} máy.` };
+    log('INFO', `WEB BULK-DELETE ${done}/${mids.length}`);
+    res.redirect('/machines');
+});
+
+app.post('/bulk-tier', auth, (req, res) => {
+    const mids = parseMidsFromBody(req.body);
+    const tier = ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : null;
+    if (!mids.length || !tier) {
+        req.session.flash = { type: 'danger', msg: 'Chưa chọn máy hoặc tier không hợp lệ.' };
+        return res.redirect('/machines');
+    }
+    const db = loadDB();
+    let done = 0;
+    for (const mid of mids) {
+        if (db[mid]) { db[mid].tier = tier; done++; }
+    }
+    saveDB(db);
+    req.session.flash = { type: 'success', msg: `Đã đổi ${done}/${mids.length} máy sang ${TIERS[tier].label}.` };
+    log('INFO', `WEB BULK-TIER ${done}/${mids.length} → ${tier}`);
+    res.redirect('/machines');
 });
 
 // ── Maintenance mode ──────────────────────────────────────────────────────────
