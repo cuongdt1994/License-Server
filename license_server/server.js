@@ -804,7 +804,19 @@ const tcpServer = net.createServer((socket) => {
 
             entry.last_hb_ts = Date.now();
             db[mid] = entry; saveDB(db);
-            pushStat(mid, cnt);
+
+            // ── Grace period: tránh race condition game server báo cnt=0
+            //     ngay sau khi vừa báo cnt>0 (cùng 1 giây) → giữ giá trị cũ.
+            const HB_GRACE_MS = 5000; // 5 giây
+            let effectiveCnt = cnt;
+            if (cnt === 0 && active[mid] && active[mid].players > 0) {
+                const prevTime = new Date(active[mid].last_seen.replace(' ', 'T')).getTime();
+                if (Date.now() - prevTime < HB_GRACE_MS) {
+                    effectiveCnt = active[mid].players;
+                }
+            }
+
+            pushStat(mid, effectiveCnt);
 
             if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
                 log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
@@ -813,9 +825,9 @@ const tcpServer = net.createServer((socket) => {
             // Trả về "OK <max>" và kèm "KEY:<key>" nếu có để client tự đồng bộ license.key
             // Client sẽ ghi đè ./license.key khi phát hiện key khác key đang dùng.
             socket.write(tcpEncrypt(`OK ${maxPl}`));
-            active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
-            wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl });
-            log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}`);
+            active[mid] = { ...active[mid], ip, players: effectiveCnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
+            wsBroadcast('machine.hb', { mid, players: effectiveCnt, max_players: maxPl });
+            log('INFO', `HB OK       ${ip}  [${mid}]  players=${effectiveCnt}/${maxPl}${effectiveCnt !== cnt ? ' (rcvd=0, kept prev)' : ''}`);
         }
         socket.end();
     });
