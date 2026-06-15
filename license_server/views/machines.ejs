@@ -1119,6 +1119,104 @@
   document.querySelectorAll('.overlay').forEach(ov => {
     ov.addEventListener('click', e => { if (e.target === ov) hideOverlay(ov.id); });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // WebSocket live updates — real-time status & player counts
+  // ═══════════════════════════════════════════════════════════════════════════
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = wsProto + '//' + location.host + '/ws';
+  let wsSocket = null, wsReconnect = null;
+
+  function connectMachineWS() {
+    if (wsSocket && wsSocket.readyState === WebSocket.OPEN) return;
+    try { wsSocket = new WebSocket(wsUrl); } catch (e) { scheduleMachineWS(); return; }
+
+    wsSocket.onopen = () => {
+      const indicator = document.querySelector('.table-hint');
+      if (indicator) indicator.innerHTML = indicator.innerHTML.replace(/.*/, '<span style="color:#34d399">● Live</span>');
+    };
+
+    wsSocket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.event === 'machine.online') updateMachineRow(msg.data || msg, 'online');
+        else if (msg.event === 'machine.offline') updateMachineRow(msg.data || msg, 'offline');
+        else if (msg.event === 'machine.hb') updateMachineRow(msg.data || msg, 'hb');
+      } catch (e) {}
+    };
+
+    wsSocket.onclose = () => { scheduleMachineWS(); };
+    wsSocket.onerror = () => { wsSocket?.close(); };
+  }
+
+  function scheduleMachineWS() {
+    if (wsReconnect) return;
+    wsReconnect = setTimeout(() => { wsReconnect = null; connectMachineWS(); }, 5000);
+  }
+
+  function updateMachineRow(data, eventType) {
+    if (!data || !data.mid) return;
+    // Find row by MID
+    const row = machineRows.find(r => {
+      const code = r.querySelector('code');
+      return code && code.textContent.trim() === data.mid;
+    });
+    if (!row) return;
+
+    const statusCell = row.querySelector('td:nth-child(7)'); // Status column (col 7 with checkbox)
+    const peakCell = row.querySelector('td:nth-child(6)');   // Peak column
+
+    if (eventType === 'online') {
+      row.dataset.status = 'online';
+      row.setAttribute('data-sort-status', 'online');
+      // Update tier if provided
+      if (data.tier) {
+        row.dataset.tier = data.tier;
+        row.setAttribute('data-sort-tier', data.tier);
+      }
+      if (statusCell) {
+        const maxPl = parseInt(row.getAttribute('data-sort-max')) || 20;
+        statusCell.innerHTML =
+          '<span class="pill pill-green">● Online</span>' +
+          '<div style="font-size:.72rem;color:var(--muted);margin-top:3px">0/' + maxPl + ' players</div>';
+        // Restore sparkline opacity
+        const svg = statusCell.querySelector('.sparkline-svg');
+        if (svg) svg.style.opacity = '1';
+      }
+    } else if (eventType === 'offline') {
+      row.dataset.status = 'offline';
+      row.setAttribute('data-sort-status', 'offline');
+      if (statusCell) {
+        // Keep existing info but change pill
+        const pill = statusCell.querySelector('.pill');
+        if (pill) { pill.className = 'pill pill-gray'; pill.textContent = 'Offline'; }
+        const svg = statusCell.querySelector('.sparkline-svg');
+        if (svg) svg.style.opacity = '0.5';
+      }
+    } else if (eventType === 'hb') {
+      const players = data.players || 0;
+      const maxPl = data.max_players || parseInt(row.getAttribute('data-sort-max')) || 20;
+      if (statusCell) {
+        const playerDiv = statusCell.querySelector('div');
+        if (playerDiv) playerDiv.textContent = players + '/' + maxPl + ' players';
+        // Update sparkline — add new point
+        const svg = statusCell.querySelector('.sparkline-svg');
+        if (svg && svg.dataset.sparkline) {
+          svg.dataset.sparkline += ',' + Date.now() + ':' + players;
+          // Trim to last 48 points
+          const parts = svg.dataset.sparkline.split(',');
+          if (parts.length > 48) svg.dataset.sparkline = parts.slice(-48).join(',');
+          renderSparkline(svg);
+        }
+      }
+      if (peakCell && data.players > parseInt(peakCell.textContent || '0')) {
+        peakCell.textContent = String(data.players);
+        row.setAttribute('data-sort-peak', String(data.players));
+      }
+    }
+  }
+
+  connectMachineWS();
 </script>
 </body>
 </html>
