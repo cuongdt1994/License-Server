@@ -1139,7 +1139,13 @@
     wsSocket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.event === 'machine.online') updateMachineRow(msg.data || msg, 'online');
+        if (msg.event === 'init') {
+          // Snapshot đầy đủ khi WS vừa connect — đồng bộ toàn bộ trạng thái
+          const snapshot = Array.isArray(msg.data) ? msg.data : [];
+          snapshot.forEach(function(srv) {
+            if (srv && srv.mid) updateMachineRow(srv, 'online');
+          });
+        } else if (msg.event === 'machine.online') updateMachineRow(msg.data || msg, 'online');
         else if (msg.event === 'machine.offline') updateMachineRow(msg.data || msg, 'offline');
         else if (msg.event === 'machine.hb') updateMachineRow(msg.data || msg, 'hb');
       } catch (e) {}
