@@ -40,6 +40,7 @@ const {
     clearFailDelay,
     appendAuditLine,
     verifyAuditChain,
+    migrateAuditChainIfNeeded,
     updateChecksum,
     verifyAllChecksums,
 } = require('./security');
@@ -71,7 +72,7 @@ RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
-const DEFAULT_PLAYERS = 5;
+const DEFAULT_PLAYERS = 10;  // Basic tier: 10 players
 
 // ── Safe max_players resolver ─────────────────────────────────────────────────
 // Luôn trả về số nguyên dương. Không bao giờ trả về 0.
@@ -2161,6 +2162,12 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
 httpServer.listen(WEB_PORT, BIND_HOST, () => {
     log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
+
+    // ── Security: migrate old audit log format → HMAC chain ───────────────
+    const auditMigrate = migrateAuditChainIfNeeded(AUDIT_FILE);
+    if (auditMigrate.migrated) {
+        log('INFO', `Audit log migrated: ${auditMigrate.entries} entries — added HMAC chain hashes`);
+    }
 
     // ── Security: verify audit log integrity ───────────────────────────────
     const auditVerify = verifyAuditChain(AUDIT_FILE);

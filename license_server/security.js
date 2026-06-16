@@ -213,24 +213,58 @@ function saveAuditChainState(file, hash) {
 
 function verifyAuditChain(file) {
     const fs = require('fs');
-    if (!fs.existsSync(file)) return { ok: true, entries: 0 };
+    if (!fs.existsSync(file)) return { ok: true, entries: 0, migrated: false };
     const content = fs.readFileSync(file, 'utf8');
     const lines = content.split('\n').filter(l => l.trim());
-    if (lines.length === 0) return { ok: true, entries: 0 };
+    if (lines.length === 0) return { ok: true, entries: 0, migrated: false };
 
     let prevHash = 'GENESIS';
     for (let i = 0; i < lines.length; i++) {
         const parts = lines[i].split('\t');
-        if (parts.length < 2) return { ok: false, error: `Line ${i + 1}: missing chain hash`, entries: lines.length };
+        if (parts.length < 2) return { ok: false, error: `Line ${i + 1}: missing chain hash`, entries: lines.length, migrated: false };
         const lineContent = parts.slice(0, -1).join('\t');
         const storedHash = parts[parts.length - 1];
         const expectedHash = computeAuditChainHash(prevHash, lineContent);
         if (!safeEqual(expectedHash, storedHash)) {
-            return { ok: false, error: `Line ${i + 1}: chain hash mismatch (expected ${expectedHash.slice(0, 12)}..., got ${storedHash.slice(0, 12)}...)`, entries: lines.length };
+            return { ok: false, error: `Line ${i + 1}: chain hash mismatch (expected ${expectedHash.slice(0, 12)}..., got ${storedHash.slice(0, 12)}...)`, entries: lines.length, migrated: false };
         }
         prevHash = expectedHash;
     }
-    return { ok: true, entries: lines.length };
+    return { ok: true, entries: lines.length, migrated: false };
+}
+
+// ── Auto-migrate old audit log (no chain hashes) ────────────────────────────
+// Audit log cũ không có \t<chain_hash>. Hàm này phát hiện và re-write
+// toàn bộ file với chain hash cho từng dòng.
+function migrateAuditChainIfNeeded(file) {
+    const fs = require('fs');
+    if (!fs.existsSync(file)) return { ok: true, entries: 0, migrated: false };
+
+    const content = fs.readFileSync(file, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return { ok: true, entries: 0, migrated: false };
+
+    // Check if first line has chain hash (contains \t at end)
+    const firstParts = lines[0].split('\t');
+    if (firstParts.length >= 2 && firstParts[firstParts.length - 1].length === 64) {
+        // Already has chain hash — nothing to migrate
+        return { ok: true, entries: lines.length, migrated: false };
+    }
+
+    // Old format detected — rebuild with chain hashes
+    let prevHash = 'GENESIS';
+    const newLines = [];
+    for (const line of lines) {
+        const newHash = computeAuditChainHash(prevHash, line);
+        newLines.push(line + '\t' + newHash);
+        prevHash = newHash;
+    }
+
+    // Write migrated file
+    fs.writeFileSync(file, newLines.join('\n') + '\n', { mode: 0o600 });
+    saveAuditChainState(file, prevHash);
+
+    return { ok: true, entries: lines.length, migrated: true };
 }
 
 // ── Config file integrity checksums ────────────────────────────────────────
@@ -302,6 +336,7 @@ module.exports = {
     clearFailDelay,
     appendAuditLine,
     verifyAuditChain,
+    migrateAuditChainIfNeeded,
     updateChecksum,
     verifyAllChecksums,
 };
