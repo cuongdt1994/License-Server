@@ -47,6 +47,7 @@ const {
 const agent     = require('./agent_manager');
 const commandPolicy = require('./command_policy');
 const { createDeployManager } = require('./deploy_manager');
+const { WebSocketServer } = require('ws');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
 const RUNTIME         = buildRuntimeConfig();
@@ -523,8 +524,28 @@ function makeToken(mid, maxPl) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`${mid}|${maxPl}`).digest('hex');
 }
 
-// ── WebSocket broadcast (đã gỡ bỏ — không dùng nữa) ───────────────────────────
-function wsBroadcast(event, data) { /* no-op: WebSocket đã bị xóa */ }
+// ── WebSocket realtime clients map ──────────────────────────────────────────────
+// mid → { ws, ip, players, authenticated, last_seen }
+const wsClients = new Map();
+
+// Push realtime config change tới game server qua WebSocket (nếu đang kết nối)
+function wsPushToClient(mid, message) {
+    const client = wsClients.get(mid);
+    if (!client || client.ws.readyState !== 1) return false;
+    try {
+        client.ws.send(tcpEncrypt(message));
+        return true;
+    } catch (e) {
+        log('WARNING', `WS PUSH FAIL [${mid}]: ${e.message}`);
+        return false;
+    }
+}
+
+// Broadcast trạng thái cho web UI (nếu cần websocket browser sau này)
+function wsBroadcast(event, data) {
+    // Web UI hiện tại dùng poll — để sẵn interface cho tương lai
+    // wsPushToAllClients(JSON.stringify({ event, data }));
+}
 
 // ── Offline detector (5 min timeout) ─────────────────────────────────────────
 setInterval(() => {
@@ -929,6 +950,299 @@ tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_
 const app        = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
+
+// ── WebSocket Realtime Server ───────────────────────────────────────────────
+// Persistent connection thay thế TCP polling. Client kết nối 1 lần, server
+// có thể PUSH CFGMAX/KEY/REVOKE ngay lập tức không cần chờ HB poll.
+const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+
+wss.on('connection', (ws, req) => {
+    const ip = (req.socket.remoteAddress || '').replace('::ffff:', '') || '?';
+
+    // Rate limit per IP
+    let wsIpCount = 0;
+    for (const [, c] of wsClients) { if (c.ip === ip) wsIpCount++; }
+    if (wsIpCount >= TCP_MAX_CONCURRENT_PER_IP) {
+        ws.close(1013, 'Too many connections');
+        return;
+    }
+
+    let authenticated = false;
+    let mid = null;
+
+    // Timeout: phải AUTH trong 15s nếu không tự disconnect
+    const authTimer = setTimeout(() => {
+        if (!authenticated) {
+            log('WARNING', `WS AUTH TIMEOUT ${ip}`);
+            ws.close(4001, 'Auth timeout');
+        }
+    }, 15000);
+
+    ws.on('message', (data, isBinary) => {
+        if (!isBinary) {
+            ws.close(1003, 'Binary frames only');
+            return;
+        }
+
+        // Giải mã AES-256-GCM (dùng chung hàm với TCP)
+        const plain = tcpDecrypt(data.toString());
+        if (!plain) {
+            log('WARNING', `WS DECRYPT FAIL ${ip} [${mid || '?'}]`);
+            ws.close(4002, 'Decrypt failed');
+            return;
+        }
+
+        const parts = plain.trim().split(' ');
+        const cmd   = parts[0]?.toUpperCase();
+
+        // ── AUTH ──────────────────────────────────────────────────────
+        if (cmd === 'AUTH' && parts[1] && !authenticated) {
+            const _mid     = parts[1];
+            const sentKey  = parts[2] || null;
+            const sendMsg  = (msg) => {
+                try { ws.send(tcpEncrypt(msg)); } catch {}
+            };
+
+            if (!isValidMachineId(_mid)) {
+                sendMsg('DENY');
+                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (invalid id)`);
+                ws.close(4003, 'Invalid machine id'); return;
+            }
+
+            // Kiểm tra IP ban
+            if (isIpBanned(ip, loadBans())) {
+                sendMsg('DENY');
+                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (banned)`);
+                ws.close(4003, 'Banned'); return;
+            }
+
+            if (isMaintenanceActive()) {
+                sendMsg('MAINTENANCE'); ws.close(); return;
+            }
+
+            // Dùng chung logic AUTH với TCP
+            const db = loadDB();
+            let entry = db[_mid];
+            let justRegistered = false;
+
+            if (!entry) {
+                if (!autoRegisterEnabled()) {
+                    sendMsg('DENY');
+                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (not registered)`);
+                    ws.close(4003, 'Not registered'); return;
+                }
+                // Auto-register
+                const newKey = crypto.randomBytes(16).toString('hex');
+                entry = {
+                    tier: 'basic', max_players: 10, expires_at: null,
+                    license_key: newKey, added: now(), note: '',
+                };
+                db[_mid] = entry; saveDB(db);
+                justRegistered = true;
+                log('INFO', `WS AUTH AUTO  ${ip}  [${_mid}]  tier=basic max=10`);
+            }
+
+            if (entry.revoked) {
+                sendMsg('DENY');
+                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (revoked)`);
+                ws.close(4003, 'Revoked'); return;
+            }
+            if (isExpired(entry)) {
+                sendMsg('DENY');
+                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (expired)`);
+                ws.close(4003, 'Expired'); return;
+            }
+
+            // License key check
+            if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
+                sendMsg('DENY');
+                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (missing key)`);
+                ws.close(4003, 'Missing key'); return;
+            }
+
+            if (STRICT_LICENSE_KEY && sentKey && entry.license_key) {
+                const validKey = (sentKey === entry.license_key);
+                const shouldBootstrapKey = !validKey && canBootstrapLicenseKey(entry, sentKey);
+                if (!validKey && !shouldBootstrapKey) {
+                    sendMsg('DENY');
+                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (wrong key)`);
+                    ws.close(4003, 'Wrong key'); return;
+                }
+            }
+
+            // IP whitelist
+            if (entry.allowed_ips?.length > 0) {
+                const allowed = entry.allowed_ips.some(cidr => ipInCIDR(ip, cidr));
+                if (!allowed) {
+                    sendMsg('DENY');
+                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (IP not whitelisted)`);
+                    ws.close(4003, 'IP not whitelisted'); return;
+                }
+            }
+
+            // AUTH OK
+            const maxPl   = getMaxPlayers(entry);
+            const token   = makeToken(_mid, maxPl);
+            const agentTok = agent.getOrCreateToken(_mid);
+            const needSyncKey = justRegistered
+                || (entry.license_key && sentKey && sentKey !== entry.license_key);
+            let okPayload = `OK ${maxPl} ${token}`;
+            if (needSyncKey && entry.license_key) okPayload += ` ${entry.license_key}`;
+            if (agentTok) okPayload += ` ${agentTok}`;
+
+            sendMsg(okPayload);
+            authenticated = true;
+            mid = _mid;
+            clearTimeout(authTimer);
+
+            // Push pending config nếu có
+            let pushed = '';
+            const pendingMax = _pendingMaxPlayers.get(mid);
+            const pendingKey = _pendingKey.get(mid);
+            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
+                sendMsg(`CFGMAX:${pendingMax}`);
+                _pendingMaxPlayers.delete(mid);
+                pushed += ` CFGMAX:${pendingMax}`;
+            }
+            if (pendingKey !== undefined && pendingKey.length === 32) {
+                sendMsg(`KEY:${pendingKey}`);
+                _pendingKey.delete(mid);
+                pushed += ` KEY:${pendingKey}`;
+            }
+
+            const wasOnline = !!active[mid];
+            active[mid] = { ip, players: 0, last_seen: now(), uptime_start: now() };
+            if (!wasOnline) {
+                pushHistory({ mid, event: 'online', ip, via: 'ws' });
+                sendTelegram(`🟢 <b>Server Online</b> (WS)\n<code>${mid}</code>\nIP: ${ip}`);
+                dispatchWebhook('machine.online', { mid, ip });
+            }
+
+            // Track WS client để push realtime
+            wsClients.set(mid, { ws, ip, players: 0, authenticated: true });
+            if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
+            log('INFO', `WS AUTH OK   ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}${pushed}`);
+
+            // Agent install
+            if (agentTok) agent.ensureInstalled(mid, agentTok);
+
+            return;
+        }
+
+        // ── HB (chỉ sau AUTH) ─────────────────────────────────────────
+        if (cmd === 'HB' && authenticated && mid) {
+            const cnt = parseInt(parts[2], 10) || 0;
+            const sendMsg = (msg) => {
+                try { ws.send(tcpEncrypt(msg)); } catch {}
+            };
+
+            const db = loadDB();
+            const entry = db[mid];
+
+            if (!entry || entry.revoked) {
+                sendMsg('REVOKE');
+                if (active[mid]) {
+                    pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
+                    dispatchWebhook('license.revoked', { mid, ip });
+                }
+                delete active[mid]; wsClients.delete(mid);
+                log('WARNING', `WS HB REVOKE ${ip}  [${mid}]  (revoked)`);
+                ws.close(4004, 'Revoked'); return;
+            }
+            if (isExpired(entry)) {
+                sendMsg('REVOKE');
+                if (active[mid]) {
+                    pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
+                    dispatchWebhook('license.expired', { mid, ip });
+                }
+                delete active[mid]; wsClients.delete(mid);
+                log('WARNING', `WS HB REVOKE ${ip}  [${mid}]  (expired)`);
+                ws.close(4004, 'Expired'); return;
+            }
+
+            const maxPl = getMaxPlayers(entry);
+            if (cnt > maxPl) {
+                if (!entry._alertOver) {
+                    entry._alertOver = true;
+                    sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
+                }
+                log('WARNING', `WS HB OVER   ${ip}  [${mid}]  players=${cnt}>${maxPl}`);
+            } else if (cnt < Math.floor(maxPl * 0.9)) {
+                entry._alertOver = false;
+            }
+
+            if (cnt > (entry.peak_players || 0)) entry.peak_players = cnt;
+            if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
+                entry._alert80 = true;
+                sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
+            } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7)) {
+                entry._alert80 = false;
+            }
+
+            entry.last_hb_ts = Date.now();
+            db[mid] = entry; saveDB(db);
+            pushStat(mid, cnt);
+
+            // CFGMAX + KEY push
+            let hbExtra = '';
+            const pendingMax = _pendingMaxPlayers.get(mid);
+            const pendingKey = _pendingKey.get(mid);
+            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
+                hbExtra += ` CFGMAX:${pendingMax}`;
+                _pendingMaxPlayers.delete(mid);
+                log('INFO', `WS HB CFGMAX [${mid}]  max_players → ${pendingMax} (push)`);
+            }
+            if (pendingKey !== undefined && pendingKey.length === 32) {
+                hbExtra += ` KEY:${pendingKey}`;
+                _pendingKey.delete(mid);
+                log('INFO', `WS HB KEY-SYNC [${mid}]  license_key updated (push)`);
+            }
+
+            sendMsg(`OK ${maxPl}${hbExtra}`);
+            active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
+            if (wsClients.has(mid)) {
+                wsClients.get(mid).players = cnt;
+                wsClients.get(mid).last_seen = Date.now();
+            }
+
+            log('INFO', `WS HB OK     ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
+            return;
+        }
+
+        // Unknown command or unauthenticated
+        log('WARNING', `WS UNKNOWN   ${ip}  cmd=${cmd}  auth=${authenticated}`);
+    });
+
+    ws.on('close', (code) => {
+        if (mid) {
+            wsClients.delete(mid);
+            // Không xóa active[mid] ngay — giữ cho đến khi timeout
+            // để web UI vẫn thấy "online" nếu client reconnect nhanh
+            log('INFO', `WS CLOSE     [${mid}]  code=${code}  ip=${ip}`);
+        }
+        clearTimeout(authTimer);
+    });
+
+    ws.on('error', () => {});
+    ws.on('pong', () => {
+        if (mid && wsClients.has(mid)) {
+            wsClients.get(mid).last_seen = Date.now();
+        }
+    });
+});
+
+// WebSocket ping/pong keepalive mỗi 30s
+setInterval(() => {
+    for (const [mid, client] of wsClients) {
+        if (client.ws.readyState === 1) {
+            client.ws.ping();
+        } else {
+            wsClients.delete(mid);
+        }
+    }
+}, 30000);
+
+log('INFO', `WebSocket realtime server ready (path=/ws)`);
 app.use((req, res, next) => {
     for (const [k, v] of Object.entries(securityHeaders())) res.setHeader(k, v);
     next();
@@ -1240,15 +1554,22 @@ app.post('/update-limit', auth, (req, res) => {
     saveDB(db);
 
     // ── CFGMAX real-time push ─────────────────────────────────────────────
-    // Nếu max_players thay đổi và máy đang online, đánh dấu pending để
-    // lần HB tiếp theo (≤5s) server gửi CFGMAX:<new_max>.
+    // Nếu max_players thay đổi và máy đang online:
+    //   - WS client → PUSH NGAY LẬP TỨC (không cần chờ HB poll)
+    //   - TCP client → đánh dấu pending, lần HB tiếp theo sẽ gửi
     const newMax = getMaxPlayers(db[mid]);
     if (newMax !== oldMax && active[mid]) {
         _pendingMaxPlayers.set(mid, newMax);
         log('INFO', `CFGMAX PENDING [${mid}] ${oldMax} → ${newMax} (will push on next HB)`);
+
+        // ── WS realtime: push ngay lập tức ──────────────────────────
+        if (wsPushToClient(mid, `CFGMAX:${newMax}`)) {
+            _pendingMaxPlayers.delete(mid);  // đã push, không cần pending
+            log('INFO', `WS CFGMAX PUSH [${mid}] ${oldMax} → ${newMax} (instant)`);
+        }
     }
 
-    req.session.flash = { type: 'success', msg: `Đã cập nhật ${mid}` + (active[mid] && newMax !== oldMax ? ' — thay đổi sẽ có hiệu lực trong ≤5s.' : '') };
+    req.session.flash = { type: 'success', msg: `Đã cập nhật ${mid}` + (active[mid] && newMax !== oldMax ? ' — thay đổi sẽ có hiệu lực ngay lập tức.' : '') };
     res.redirect('/machines');
 });
 
@@ -1297,15 +1618,22 @@ app.post('/gen-key', auth, (req, res) => {
     db[mid] = entry; saveDB(db);
 
     // ── KEY real-time sync ────────────────────────────────────────────────
-    // Nếu máy đang online, đánh dấu pending để lần HB tiếp theo (≤5s)
-    // server gửi KEY:<new_key> xuống client, client tự ghi license.key.
+    // Nếu máy đang online:
+    //   - WS client → PUSH NGAY LẬP TỨC
+    //   - TCP client → đánh dấu pending, lần HB tiếp theo sẽ gửi
     if (active[mid]) {
         _pendingKey.set(mid, newKey);
         log('INFO', `KEY-SYNC PENDING [${mid}] → new key will be pushed on next HB`);
+
+        // ── WS realtime: push ngay lập tức ──────────────────────────
+        if (wsPushToClient(mid, `KEY:${newKey}`)) {
+            _pendingKey.delete(mid);
+            log('INFO', `WS KEY-SYNC PUSH [${mid}] → key updated (instant)`);
+        }
     }
 
     req.session.flash = { type: 'success',
-        msg: `Key mới [${mid}]: ${newKey} — key cũ còn hiệu lực 24h để client đồng bộ.` + (active[mid] ? ' Key sẽ được đẩy xuống máy trong ≤5s.' : '') };
+        msg: `Key mới [${mid}]: ${newKey} — key cũ còn hiệu lực 24h để client đồng bộ.` + (active[mid] ? ' Key sẽ được đẩy xuống máy ngay lập tức.' : '') };
     log('INFO', `WEB GEN-KEY [${mid}] (old key kept ${KEY_GRACE_MS/3600000}h grace)`);
     res.redirect('/machines');
 });
