@@ -1518,7 +1518,7 @@ app.post('/plans/add', auth, (req, res) => {
         id: crypto.randomBytes(4).toString('hex'),
         name:        (req.body.name || '').trim(),
         tier:        ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : 'basic',
-        max_players: parseInt(req.body.max_players) || 20,
+        max_players: parseInt(req.body.max_players) || DEFAULT_PLAYERS,
         trial_days:  parseInt(req.body.trial_days) || 0,
         expires_days:parseInt(req.body.expires_days) || 0,
         note:        (req.body.note || '').trim(),
@@ -1758,7 +1758,7 @@ app.post('/import', auth, upload.single('csvfile'), (req, res) => {
     const db = loadDB();
     let added = 0, skipped = 0, errors = [];
     for (const line of lines) {
-        const [mid, tier = 'basic', max_players = '20', note = '', expires_at = ''] = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+        const [mid, tier = 'basic', max_players = '10', note = '', expires_at = ''] = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
         if (!mid) { skipped++; continue; }
         if (db[mid]) { skipped++; errors.push(`${mid}: đã tồn tại`); continue; }
         const validTier = TIERS[tier] ? tier : 'basic';
