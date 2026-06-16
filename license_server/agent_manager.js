@@ -13,6 +13,8 @@ const POLL_TIMEOUT_MS = 25000;
 const CMD_TTL_MS      = 5 * 60 * 1000;
 const RESULT_TTL_MS   = 10 * 60 * 1000;
 const MONITOR_TTL_MS  = 5 * 60 * 1000;
+const TOKEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;  // 90 ngày — token hết hạn
+const TOKEN_WARN_AGE_MS = 83 * 24 * 60 * 60 * 1000; // Cảnh báo sau 83 ngày
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
@@ -42,7 +44,7 @@ function getOrCreateToken(mid) {
     const all = loadTokens();
     if (all[mid]?.token) return all[mid].token;
     const tok = crypto.randomBytes(24).toString('hex');
-    all[mid] = { token: tok, created: new Date().toISOString() };
+    all[mid] = { token: tok, created: new Date().toISOString(), rotated_at: new Date().toISOString() };
     saveTokens(all);
     return tok;
 }
@@ -55,9 +57,42 @@ function regenerateToken(mid) {
 function verifyToken(mid, token) {
     const e = loadTokens()[mid];
     if (!e || !token) return false;
+    // Kiểm tra token expiry (90 ngày)
+    if (isTokenExpired(mid)) return false;
     const a = Buffer.from(e.token);
     const b = Buffer.from(token);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+// ── Token rotation enforcement ──────────────────────────────────────────────
+function isTokenExpired(mid) {
+    const e = loadTokens()[mid];
+    if (!e) return true;
+    // Dùng rotated_at nếu có, nếu không dùng created
+    const ts = e.rotated_at || e.created;
+    if (!ts) return true;
+    const age = Date.now() - new Date(ts).getTime();
+    return age > TOKEN_MAX_AGE_MS;
+}
+function getTokenExpiryInfo(mid) {
+    const e = loadTokens()[mid];
+    if (!e) return null;
+    const ts = e.rotated_at || e.created;
+    if (!ts) return null;
+    const created = new Date(ts).getTime();
+    const expiresAt = created + TOKEN_MAX_AGE_MS;
+    const daysLeft = Math.ceil((expiresAt - Date.now()) / 86400000);
+    return { created: ts, expiresAt: new Date(expiresAt).toISOString(), daysLeft, expired: daysLeft <= 0 };
+}
+function checkExpiringTokens(sendTelegramFn) {
+    const all = loadTokens();
+    const expiringSoon = [];
+    for (const mid of Object.keys(all)) {
+        const info = getTokenExpiryInfo(mid);
+        if (info && info.daysLeft > 0 && info.daysLeft <= 7) {
+            expiringSoon.push({ mid, daysLeft: info.daysLeft });
+        }
+    }
+    return expiringSoon;
 }
 function listInstalled() {
     const tokens = loadTokens();
@@ -393,4 +428,6 @@ module.exports = {
     enqueueCommand, pollCommands, pollOne, recordResult, takeResult,
     buildStartScript, buildStopScript,
     buildInstallScript, buildUninstallScript,
+    isTokenExpired, getTokenExpiryInfo, checkExpiringTokens,
+    TOKEN_MAX_AGE_MS, TOKEN_WARN_AGE_MS,
 };

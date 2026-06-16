@@ -30,6 +30,18 @@ const {
     hashPassword,
     verifyPassword,
     normalizeAdminCredentials,
+    isStrongPassword,
+    recordLockEvent,
+    clearLockHistory,
+    AUTO_BAN_LOCK_THRESHOLD,
+    AUTO_BAN_WINDOW_MS,
+    AUTO_BAN_DURATION_MS,
+    getProgressiveDelayMs,
+    clearFailDelay,
+    appendAuditLine,
+    verifyAuditChain,
+    updateChecksum,
+    verifyAllChecksums,
 } = require('./security');
 const agent     = require('./agent_manager');
 const commandPolicy = require('./command_policy');
@@ -192,7 +204,7 @@ function portalRlClear(ip) { delete portalAttempts[ip]; }
 
 // ── TCP Rate limiting per IP ──────────────────────────────────────────────────
 const tcpAttempts = {};
-const TCP_MAX = 15, TCP_LOCK_MS = 5 * 60 * 1000;
+const TCP_MAX = 8, TCP_LOCK_MS = 5 * 60 * 1000;  // Giảm từ 15 → 8 (với realtime HB 5s, traffic ít hơn)
 function tcpRlBlocked(ip) {
     const e = tcpAttempts[ip];
     if (!e) return false;
@@ -217,7 +229,10 @@ function saveJsonPrivate(file, data, pretty = true) {
     const payload = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
     fs.writeFileSync(file, payload, { mode: 0o600 });
 }
-function saveBans(b) { saveJsonPrivate(BAN_FILE, b); }
+function saveBans(b) {
+    saveJsonPrivate(BAN_FILE, b);
+    updateChecksum(CHECKSUM_FILE, BAN_FILE);
+}
 function ipToInt(ip) { return ip.split('.').reduce((a, o) => ((a << 8) + parseInt(o, 10)) >>> 0, 0); }
 function isIpBanned(ip, bans) {
     for (const [range, info] of Object.entries(bans)) {
@@ -300,7 +315,7 @@ function log(level, msg) {
 
 function audit(req, action, details = {}) {
     try {
-        auditEvent(AUDIT_FILE, { action, user: WEB_USER, ip: clientIp(req), details });
+        appendAuditLine(AUDIT_FILE, { action, user: WEB_USER, ip: clientIp(req), details });
     } catch (e) {
         log('WARNING', `AUDIT FAIL action=${action} err=${e.message}`);
     }
@@ -311,7 +326,10 @@ function loadDB() {
     if (!fs.existsSync(DB_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return {}; }
 }
-function saveDB(db) { saveJsonPrivate(DB_FILE, db); }
+function saveDB(db) {
+    saveJsonPrivate(DB_FILE, db);
+    updateChecksum(CHECKSUM_FILE, DB_FILE);
+}
 function now() { return new Date().toLocaleString('sv').replace('T', ' '); }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -319,14 +337,20 @@ function loadSettings() {
     if (!fs.existsSync(SETTINGS_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
 }
-function saveSettings(s) { saveJsonPrivate(SETTINGS_FILE, s); }
+function saveSettings(s) {
+    saveJsonPrivate(SETTINGS_FILE, s);
+    updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
+}
 
 // ── Plans ─────────────────────────────────────────────────────────────────────
 function loadPlans() {
     if (!fs.existsSync(PLANS_FILE)) return [];
     try { return JSON.parse(fs.readFileSync(PLANS_FILE, 'utf8')); } catch { return []; }
 }
-function savePlans(p) { saveJsonPrivate(PLANS_FILE, p); }
+function savePlans(p) {
+    saveJsonPrivate(PLANS_FILE, p);
+    updateChecksum(CHECKSUM_FILE, PLANS_FILE);
+}
 
 // ── Stats (time-series) ───────────────────────────────────────────────────────
 function loadStats() {
@@ -475,8 +499,23 @@ function doBackup() {
     log('INFO', `Backup → ${dest}`);
 }
 
+const CHECKSUM_FILE   = path.join(DATA_DIR, '.checksums.json');
+
 // ── Active servers map ────────────────────────────────────────────────────────
 const active = {};
+
+// ── Pending config change maps (CFGMAX + KEY real-time push) ──────────────────
+// Khi admin thay đổi max_players hoặc license key trên web UI, thay đổi được
+// đánh dấu "pending" ở đây. Lần heartbeat tiếp theo (≤5s với client mới),
+// server gửi CFGMAX:<n> và/hoặc KEY:<hex> kèm trong HB response, sau đó
+// clear pending flag. Điều này cho phép config thay đổi có hiệu lực gần như
+// ngay lập tức mà không cần restart game server.
+const _pendingMaxPlayers = new Map(); // mid → newValue
+const _pendingKey        = new Map(); // mid → newKey
+
+// ── TCP connection tracking ───────────────────────────────────────────────────
+const _tcpConnsPerIp = new Map();     // ip → count
+const TCP_MAX_CONCURRENT_PER_IP = 10; // Từ chối connection mới nếu vượt quá
 
 // ── HMAC token ────────────────────────────────────────────────────────────────
 function makeToken(mid, maxPl) {
@@ -517,6 +556,41 @@ setInterval(() => {
     }
     if (changed) saveDB(db);
 }, 6 * 60 * 60 * 1000);
+
+// ── Replay nonce cleanup (60s) ─────────────────────────────────────────────────
+// seenNonces map có thể grow unbounded nếu không cleanup định kỳ.
+// Mỗi 60s quét và xóa nonces đã hết hạn.
+setInterval(() => {
+    const now = Date.now();
+    for (const [k, exp] of seenNonces) {
+        if (exp < now) seenNonces.delete(k);
+    }
+}, 60 * 1000).unref();
+
+// ── Auto-ban expiry cleanup (hourly) ──────────────────────────────────────────
+// Tự động gỡ ban khi hết thời hạn auto-ban (24h).
+setInterval(() => {
+    const bans = loadBans();
+    let changed = false;
+    const now = Date.now();
+    for (const [range, info] of Object.entries(bans)) {
+        if (info.expires_at && info.expires_at < now) {
+            delete bans[range];
+            changed = true;
+            log('INFO', `AUTO-BAN EXPIRED ${range}`);
+        }
+    }
+    if (changed) saveBans(bans);
+}, 60 * 60 * 1000).unref();
+
+// ── Agent token expiry check (daily 9:00 AM) ──────────────────────────────────
+scheduleDailyTask('agent_token_expiry', 9, 5, () => {
+    const expiring = agent.checkExpiringTokens();
+    if (expiring.length > 0) {
+        const list = expiring.map(e => `• <code>${e.mid}</code> — còn ${e.daysLeft} ngày`).join('\n');
+        sendTelegram(`🔑 <b>Agent Token sắp hết hạn</b>\n${list}\n\nCần chạy lại lệnh cài đặt agent để cấp token mới.`);
+    }
+});
 
 // ── Cron: daily backup 3:00 AM ────────────────────────────────────────────────
 function scheduleDailyTask(name, hour, minute, fn, { dayOfWeek = null } = {}) {
@@ -567,8 +641,25 @@ scheduleDailyTask('weekly_report', 8, 0, () => {
 // ── TCP License Server ────────────────────────────────────────────────────────
 const tcpServer = net.createServer((socket) => {
     const ip = (socket.remoteAddress || '').replace('::ffff:', '') || '?';
+
+    // ── TCP connection tracking ────────────────────────────────────────────
+    // Giới hạn số connection đồng thời trên mỗi IP để chống DDoS.
+    const currentConns = (_tcpConnsPerIp.get(ip) || 0) + 1;
+    _tcpConnsPerIp.set(ip, currentConns);
+    if (currentConns > TCP_MAX_CONCURRENT_PER_IP) {
+        socket.write(tcpEncrypt('DENY'));
+        socket.destroy();
+        return;
+    }
+
     socket.setTimeout(15000);
     let buf = '';
+
+    socket.on('close', () => {
+        const n = (_tcpConnsPerIp.get(ip) || 1) - 1;
+        if (n <= 0) _tcpConnsPerIp.delete(ip);
+        else _tcpConnsPerIp.set(ip, n);
+    });
 
     socket.on('data', (chunk) => {
         buf += chunk.toString();
@@ -811,12 +902,30 @@ const tcpServer = net.createServer((socket) => {
                 log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
             }
 
-            // Trả về "OK <max>" và kèm "KEY:<key>" nếu có để client tự đồng bộ license.key
-            // Client sẽ ghi đè ./license.key khi phát hiện key khác key đang dùng.
-            socket.write(tcpEncrypt(`OK ${maxPl}`));
+            // ── CFGMAX + KEY real-time push ─────────────────────────────────────
+            // Nếu admin đã thay đổi max_players hoặc license key trên web UI,
+            // gửi kèm CFGMAX:<n> và/hoặc KEY:<hex> trong HB response.
+            // Client (license_check.h F9) parse các field này và áp dụng ngay
+            // mà không cần restart. Sau khi gửi, clear pending flag.
+            let hbExtra = '';
+            const pendingMax = _pendingMaxPlayers.get(mid);
+            const pendingKey = _pendingKey.get(mid);
+
+            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
+                hbExtra += ` CFGMAX:${pendingMax}`;
+                _pendingMaxPlayers.delete(mid);
+                log('INFO', `HB CFGMAX   [${mid}]  max_players → ${pendingMax} (real-time push)`);
+            }
+            if (pendingKey !== undefined && pendingKey.length === 32) {
+                hbExtra += ` KEY:${pendingKey}`;
+                _pendingKey.delete(mid);
+                log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
+            }
+
+            socket.write(tcpEncrypt(`OK ${maxPl}${hbExtra}`));
             active[mid] = { ...active[mid], ip, players: effectiveCnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
-            wsBroadcast('machine.hb', { mid, players: effectiveCnt, max_players: maxPl });
-            log('INFO', `HB OK       ${ip}  [${mid}]  players=${effectiveCnt}/${maxPl}${effectiveCnt !== cnt ? ' (rcvd=0, kept prev)' : ''}`);
+            wsBroadcast('machine.hb', { mid, players: effectiveCnt, max_players: maxPl, pendingMax: !!pendingMax, pendingKey: !!pendingKey });
+            log('INFO', `HB OK       ${ip}  [${mid}]  players=${effectiveCnt}/${maxPl}${effectiveCnt !== cnt ? ' (rcvd=0, kept prev)' : ''}${hbExtra ? ' +' + hbExtra : ''}`);
         }
         socket.end();
     });
@@ -966,6 +1075,8 @@ app.post('/login', (req, res) => {
     if (rl.blocked) return res.render('login', { error: `Quá nhiều lần thử. Chờ ${rl.remaining} phút.` });
     if (verifyAdminLogin(req.body.username, req.body.password)) {
         rl_clear(ip);
+        clearFailDelay(ip);
+        clearLockHistory(ip);
         const s = loadSettings();
         if (s.totp_enabled && s.totp_secret) {
             return req.session.regenerate((err) => {
@@ -981,11 +1092,35 @@ app.post('/login', (req, res) => {
             res.redirect('/');
         });
     }
+    // ── Fail2ban + progressive delay ───────────────────────────────────────
     rl_fail(ip);
     const e = loginAttempts[ip];
     const left = e ? Math.max(0, MAX_ATTEMPTS - (e.count || 0)) : MAX_ATTEMPTS;
     log('WARNING', `LOGIN FAIL  ip=${ip}  (${left} left)`);
-    res.render('login', { error: `Sai tài khoản hoặc mật khẩu. Còn ${left} lần thử.` });
+
+    // Kiểm tra nếu IP này vừa bị lock → fail2ban auto-ban
+    if (left === 0) {
+        const shouldAutoBan = recordLockEvent(ip);
+        if (shouldAutoBan) {
+            const bans = loadBans();
+            bans[ip] = {
+                note: `Auto-ban: ${AUTO_BAN_LOCK_THRESHOLD} lockouts in ${Math.round(AUTO_BAN_WINDOW_MS / 3600000)}h`,
+                added: now(),
+                disabled: false,
+                expires_at: Date.now() + AUTO_BAN_DURATION_MS,
+            };
+            saveBans(bans);
+            log('SECURITY', `AUTO-BAN ${ip} — ${AUTO_BAN_LOCK_THRESHOLD}+ lockouts in ${Math.round(AUTO_BAN_WINDOW_MS / 3600000)}h`);
+            sendTelegram(`🚫 <b>Auto-Ban</b>\nIP: ${ip}\nLý do: ${AUTO_BAN_LOCK_THRESHOLD}+ lần lock trong ${Math.round(AUTO_BAN_WINDOW_MS / 3600000)}h\nHết hạn: 24h`);
+            return res.render('login', { error: 'IP đã bị khóa tự động trong 24h do quá nhiều lần thử sai.' });
+        }
+    }
+
+    // Progressive delay: làm chậm response để chống brute-force timing
+    const delayMs = getProgressiveDelayMs(ip);
+    setTimeout(() => {
+        res.render('login', { error: `Sai tài khoản hoặc mật khẩu. Còn ${left} lần thử.` });
+    }, delayMs);
 });
 app.get('/logout', auth, (req, res) => res.render('logout', { flash: null }));
 app.post('/logout', auth, (req, res) => { req.session.destroy(); res.redirect('/login'); });
@@ -1018,7 +1153,14 @@ app.get('/', auth, (req, res) => {
     const rows = Object.entries(active).map(([mid, info]) => {
         const e   = db[mid] || {};
         const maxPl = getMaxPlayers(e);
-        return { mid, ...info, max_players: maxPl, tier: e.tier || 'basic', pct: maxPl ? Math.round((info.players || 0) / maxPl * 100) : 0 };
+        const hasPending = _pendingMaxPlayers.has(mid) || _pendingKey.has(mid);
+        return {
+            mid, ...info, max_players: maxPl, tier: e.tier || 'basic',
+            pct: maxPl ? Math.round((info.players || 0) / maxPl * 100) : 0,
+            pending_cfg: hasPending,
+            pending_max: _pendingMaxPlayers.has(mid),
+            pending_key: _pendingKey.has(mid),
+        };
     }).sort((a, b) => b.players - a.players);
     res.render('dashboard', {
         active_count:  rows.length,
@@ -1028,6 +1170,7 @@ app.get('/', auth, (req, res) => {
         total_players: rows.reduce((s, r) => s + (r.players || 0), 0),
         maintenance:   isMaintenanceActive(),
         rows, flash: consumeFlash(req.session), TIERS,
+        last_updated:  new Date().toLocaleTimeString('vi-VN'),
     });
 });
 
@@ -1044,6 +1187,9 @@ app.get('/machines', auth, (req, res) => {
                 expiry:   expiryInfo(info),
                 expired:  isExpired(info),
                 currentPlayers: active[mid]?.players || 0,
+                pending_cfg: _pendingMaxPlayers.has(mid) || _pendingKey.has(mid),
+                pending_max: _pendingMaxPlayers.has(mid),
+                pending_key: _pendingKey.has(mid),
             };
         });
     res.render('machines', { rows, TIERS, plans: loadPlans(), flash: consumeFlash(req.session) });
@@ -1092,6 +1238,7 @@ app.post('/update-limit', auth, (req, res) => {
     const exp   = req.body.expires_at;
     const db    = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
+    const oldMax = getMaxPlayers(db[mid]);
     if (!isNaN(maxPl) && maxPl > 0) {
         db[mid].max_players = maxPl;
     } else if (db[mid]) {
@@ -1101,7 +1248,17 @@ app.post('/update-limit', auth, (req, res) => {
     if (tier && TIERS[tier]) db[mid].tier = tier;
     if (exp !== undefined) db[mid].expires_at = exp || undefined;
     saveDB(db);
-    req.session.flash = { type: 'success', msg: `Đã cập nhật ${mid}` };
+
+    // ── CFGMAX real-time push ─────────────────────────────────────────────
+    // Nếu max_players thay đổi và máy đang online, đánh dấu pending để
+    // lần HB tiếp theo (≤5s) server gửi CFGMAX:<new_max>.
+    const newMax = getMaxPlayers(db[mid]);
+    if (newMax !== oldMax && active[mid]) {
+        _pendingMaxPlayers.set(mid, newMax);
+        log('INFO', `CFGMAX PENDING [${mid}] ${oldMax} → ${newMax} (will push on next HB)`);
+    }
+
+    req.session.flash = { type: 'success', msg: `Đã cập nhật ${mid}` + (active[mid] && newMax !== oldMax ? ' — thay đổi sẽ có hiệu lực trong ≤5s.' : '') };
     res.redirect('/machines');
 });
 
@@ -1148,8 +1305,17 @@ app.post('/gen-key', auth, (req, res) => {
     }
     entry.license_key = newKey;
     db[mid] = entry; saveDB(db);
+
+    // ── KEY real-time sync ────────────────────────────────────────────────
+    // Nếu máy đang online, đánh dấu pending để lần HB tiếp theo (≤5s)
+    // server gửi KEY:<new_key> xuống client, client tự ghi license.key.
+    if (active[mid]) {
+        _pendingKey.set(mid, newKey);
+        log('INFO', `KEY-SYNC PENDING [${mid}] → new key will be pushed on next HB`);
+    }
+
     req.session.flash = { type: 'success',
-        msg: `Key mới [${mid}]: ${newKey} — key cũ còn hiệu lực 24h để client đồng bộ.` };
+        msg: `Key mới [${mid}]: ${newKey} — key cũ còn hiệu lực 24h để client đồng bộ.` + (active[mid] ? ' Key sẽ được đẩy xuống máy trong ≤5s.' : '') };
     log('INFO', `WEB GEN-KEY [${mid}] (old key kept ${KEY_GRACE_MS/3600000}h grace)`);
     res.redirect('/machines');
 });
@@ -1523,6 +1689,62 @@ app.post('/settings/disable-2fa', auth, (req, res) => {
     s.totp_enabled = false; s.totp_secret = null; saveSettings(s);
     req.session.flash = { type: 'success', msg: '2FA đã tắt.' };
     log('INFO', '2FA DISABLED'); res.redirect('/settings');
+});
+
+// ── Change admin password ────────────────────────────────────────────────────
+app.post('/settings/change-password', auth, (req, res) => {
+    const currentPassword = String(req.body.current_password || '');
+    const newPassword     = String(req.body.new_password || '');
+    const confirmPassword = String(req.body.confirm_password || '');
+
+    // Verify current password
+    if (!verifyPassword(currentPassword, adminCreds.pass_hash)) {
+        return res.render('settings', {
+            settings: loadSettings(),
+            dataDir: DATA_DIR, dataDirSource: DATA_DIR_INFO.source,
+            dataDirLocalFile: path.join(__dirname, 'data_dir.local'),
+            runtime: RUNTIME, runtimeWarnings: RUNTIME.warnings,
+            flash: { type: 'danger', msg: 'Mật khẩu hiện tại không đúng.' },
+        });
+    }
+
+    // Validate new password strength
+    const strength = isStrongPassword(newPassword);
+    if (!strength.ok) {
+        return res.render('settings', {
+            settings: loadSettings(),
+            dataDir: DATA_DIR, dataDirSource: DATA_DIR_INFO.source,
+            dataDirLocalFile: path.join(__dirname, 'data_dir.local'),
+            runtime: RUNTIME, runtimeWarnings: RUNTIME.warnings,
+            flash: { type: 'danger', msg: strength.error },
+        });
+    }
+
+    if (newPassword !== confirmPassword) {
+        return res.render('settings', {
+            settings: loadSettings(),
+            dataDir: DATA_DIR, dataDirSource: DATA_DIR_INFO.source,
+            dataDirLocalFile: path.join(__dirname, 'data_dir.local'),
+            runtime: RUNTIME, runtimeWarnings: RUNTIME.warnings,
+            flash: { type: 'danger', msg: 'Xác nhận mật khẩu mới không khớp.' },
+        });
+    }
+
+    // Save new password
+    adminCreds = { user: WEB_USER, pass_hash: hashPassword(newPassword) };
+    fs.writeFileSync(ADMIN_FILE, JSON.stringify(adminCreds, null, 2), { mode: 0o600 });
+    updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
+
+    audit(req, 'settings.change_password', {});
+    log('SECURITY', `ADMIN PASSWORD CHANGED  ip=${clientIp(req)}`);
+    sendTelegram(`🔐 <b>Admin password changed</b>\nIP: ${clientIp(req)}`);
+
+    // Regenerate session to prevent session fixation
+    req.session.regenerate((err) => {
+        req.session.loggedIn = true;
+        req.session.flash = { type: 'success', msg: 'Đã đổi mật khẩu thành công. Vui lòng đăng nhập lại.' };
+        res.redirect('/login');
+    });
 });
 
 // ── Bulk import CSV ───────────────────────────────────────────────────────────
@@ -1939,6 +2161,37 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
 httpServer.listen(WEB_PORT, BIND_HOST, () => {
     log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
+
+    // ── Security: verify audit log integrity ───────────────────────────────
+    const auditVerify = verifyAuditChain(AUDIT_FILE);
+    if (!auditVerify.ok) {
+        log('SECURITY', `AUDIT CHAIN TAMPERED! ${auditVerify.error} (${auditVerify.entries} entries)`);
+        sendTelegram(`🚨 <b>SECURITY ALERT: Audit Log Tampered!</b>\n${auditVerify.error}\n${auditVerify.entries} entries`);
+    } else {
+        log('INFO', `Audit chain verified: ${auditVerify.entries} entries OK`);
+    }
+
+    // ── Security: verify config file integrity ────────────────────────────
+    const integrityResults = verifyAllChecksums(CHECKSUM_FILE);
+    const tampered = integrityResults.filter(r => !r.ok);
+    if (tampered.length > 0) {
+        const list = tampered.map(r => `• ${path.basename(r.file)}: ${r.error}${r.expected ? ' (expected ' + r.expected + '..., got ' + r.actual + '...)' : ''}`).join('\n');
+        log('SECURITY', `CONFIG INTEGRITY TAMPERED!\n${list}`);
+        sendTelegram(`🚨 <b>SECURITY ALERT: Config Files Tampered!</b>\n${list}`);
+    } else if (integrityResults.length > 0) {
+        log('INFO', `Config integrity verified: ${integrityResults.length} files OK`);
+    }
+
+    // ── Initialize checksums for new files ─────────────────────────────────
+    if (!fs.existsSync(CHECKSUM_FILE)) {
+        updateChecksum(CHECKSUM_FILE, DB_FILE);
+        updateChecksum(CHECKSUM_FILE, BAN_FILE);
+        updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
+        updateChecksum(CHECKSUM_FILE, PLANS_FILE);
+        updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
+        log('INFO', 'Config checksums initialized');
+    }
+
     doBackup(); // Backup on startup
     repairDBMaxPlayers(); // Quét và sửa các entry có max_players lỗi
 });

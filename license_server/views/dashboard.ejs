@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
   <title>Dashboard — License Manager</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -210,7 +211,7 @@
         Servers đang hoạt động
       </div>
       <div class="refresh-info">
-        Tải lại trang để cập nhật
+        Tự động refresh mỗi <span>30s</span> · Cập nhật lúc: <span><%= typeof last_updated !== 'undefined' ? last_updated : '—' %></span>
       </div>
     </div>
 
@@ -237,7 +238,17 @@
              var td = TIERS[r.tier] || TIERS.basic;
         %>
         <tr>
-          <td><code><%= r.mid %></code></td>
+          <td>
+            <code><%= r.mid %></code>
+            <% if (r.pending_cfg) { %>
+              <span title="Đang chờ đồng bộ cấu hình — sẽ được đẩy xuống trong ≤5s" style="color:#fbbf24;margin-left:6px;font-size:.75rem">
+                <i class="bi bi-arrow-repeat"></i>
+                <% if (r.pending_max) { %>max<% } %>
+                <% if (r.pending_max && r.pending_key) { %>+<% } %>
+                <% if (r.pending_key) { %>key<% } %>
+              </span>
+            <% } %>
+          </td>
           <td style="font-family:monospace;font-size:.82rem"><%= r.ip %></td>
           <td style="min-width:160px">
             <div style="display:flex;align-items:center;gap:8px">

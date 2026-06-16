@@ -119,6 +119,163 @@ function isAgentScriptAuthorized(query, verifyToken) {
     return !!mid && !!token && verifyToken(mid, token);
 }
 
+// ── Strong password policy ─────────────────────────────────────────────────
+// Yêu cầu: tối thiểu 10 ký tự, có ít nhất 1 chữ hoa, 1 chữ thường, 1 chữ số.
+// Từ chối các mật khẩu phổ biến (top 20).
+const COMMON_PASSWORDS = new Set([
+    'password', '1234567890', 'qwerty12345', 'adminadmin',
+    'administrator', 'letmein123', 'welcome1234', 'changeme123',
+    'abc12345678', 'password123', '123456789a', 'qwertyuiop',
+]);
+
+function isStrongPassword(password) {
+    const pwd = String(password || '');
+    if (pwd.length < 10) return { ok: false, error: 'Mật khẩu cần ít nhất 10 ký tự.' };
+    if (!/[A-Z]/.test(pwd)) return { ok: false, error: 'Mật khẩu cần ít nhất 1 chữ hoa (A-Z).' };
+    if (!/[a-z]/.test(pwd)) return { ok: false, error: 'Mật khẩu cần ít nhất 1 chữ thường (a-z).' };
+    if (!/[0-9]/.test(pwd)) return { ok: false, error: 'Mật khẩu cần ít nhất 1 chữ số (0-9).' };
+    if (COMMON_PASSWORDS.has(pwd.toLowerCase())) return { ok: false, error: 'Mật khẩu quá phổ biến, dễ bị đoán. Vui lòng chọn mật khẩu khác.' };
+    return { ok: true };
+}
+
+// ── Fail2ban-style auto-ban ────────────────────────────────────────────────
+// Nếu 1 IP bị lock ≥ AUTO_BAN_LOCK_THRESHOLD lần trong AUTO_BAN_WINDOW_MS
+// thì tự động thêm vào bans.json trong AUTO_BAN_DURATION_MS.
+const AUTO_BAN_LOCK_THRESHOLD = 3;
+const AUTO_BAN_WINDOW_MS = 60 * 60 * 1000;       // 1 giờ
+const AUTO_BAN_DURATION_MS = 24 * 60 * 60 * 1000; // 24 giờ
+const _lockHistory = {}; // ip → [timestamp, ...]
+
+function recordLockEvent(ip) {
+    if (!_lockHistory[ip]) _lockHistory[ip] = [];
+    const now = Date.now();
+    _lockHistory[ip].push(now);
+    // Chỉ giữ các lần lock trong window
+    const cutoff = now - AUTO_BAN_WINDOW_MS;
+    _lockHistory[ip] = _lockHistory[ip].filter(t => t > cutoff);
+    return _lockHistory[ip].length >= AUTO_BAN_LOCK_THRESHOLD;
+}
+
+function clearLockHistory(ip) {
+    delete _lockHistory[ip];
+}
+
+// ── Progressive delay for failed logins ────────────────────────────────────
+// Mỗi lần fail thêm delay tăng dần (max 5s) để chống brute-force timing.
+const _failDelays = {}; // ip → { count, lastFail }
+
+function getProgressiveDelayMs(ip) {
+    if (!_failDelays[ip]) _failDelays[ip] = { count: 0, lastFail: 0 };
+    const entry = _failDelays[ip];
+    // Reset counter nếu lần fail cuối > 30 phút
+    if (Date.now() - entry.lastFail > 30 * 60 * 1000) entry.count = 0;
+    entry.count++;
+    entry.lastFail = Date.now();
+    // 0.5s → 1s → 2s → 3s → 5s (max)
+    const delays = [500, 1000, 2000, 3000, 5000];
+    return delays[Math.min(entry.count - 1, delays.length - 1)];
+}
+
+function clearFailDelay(ip) {
+    delete _failDelays[ip];
+}
+
+// ── HMAC chain for audit log integrity ─────────────────────────────────────
+function computeAuditChainHash(prevHash, line) {
+    return crypto.createHmac('sha256', String(prevHash || 'GENESIS'))
+        .update(line, 'utf8')
+        .digest('hex');
+}
+
+function appendAuditLine(file, rowObj) {
+    const fs = require('fs');
+    const prevHash = readAuditChainState(file);
+    const line = JSON.stringify(rowObj);
+    const newHash = computeAuditChainHash(prevHash, line);
+    // Format: <line>\t<chain_hash>\n
+    fs.appendFileSync(file, line + '\t' + newHash + '\n', { mode: 0o600 });
+    saveAuditChainState(file, newHash);
+}
+
+function readAuditChainState(file) {
+    const fs = require('fs');
+    const stateFile = file + '.chain';
+    if (!fs.existsSync(stateFile)) return 'GENESIS';
+    try {
+        return fs.readFileSync(stateFile, 'utf8').trim() || 'GENESIS';
+    } catch { return 'GENESIS'; }
+}
+
+function saveAuditChainState(file, hash) {
+    const fs = require('fs');
+    fs.writeFileSync(file + '.chain', hash, { mode: 0o600 });
+}
+
+function verifyAuditChain(file) {
+    const fs = require('fs');
+    if (!fs.existsSync(file)) return { ok: true, entries: 0 };
+    const content = fs.readFileSync(file, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return { ok: true, entries: 0 };
+
+    let prevHash = 'GENESIS';
+    for (let i = 0; i < lines.length; i++) {
+        const parts = lines[i].split('\t');
+        if (parts.length < 2) return { ok: false, error: `Line ${i + 1}: missing chain hash`, entries: lines.length };
+        const lineContent = parts.slice(0, -1).join('\t');
+        const storedHash = parts[parts.length - 1];
+        const expectedHash = computeAuditChainHash(prevHash, lineContent);
+        if (!safeEqual(expectedHash, storedHash)) {
+            return { ok: false, error: `Line ${i + 1}: chain hash mismatch (expected ${expectedHash.slice(0, 12)}..., got ${storedHash.slice(0, 12)}...)`, entries: lines.length };
+        }
+        prevHash = expectedHash;
+    }
+    return { ok: true, entries: lines.length };
+}
+
+// ── Config file integrity checksums ────────────────────────────────────────
+function computeChecksum(filePath) {
+    const fs = require('fs');
+    if (!fs.existsSync(filePath)) return null;
+    const data = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function loadChecksums(checksumFile) {
+    const fs = require('fs');
+    if (!fs.existsSync(checksumFile)) return {};
+    try { return JSON.parse(fs.readFileSync(checksumFile, 'utf8')); } catch { return {}; }
+}
+
+function saveChecksums(checksumFile, checksums) {
+    const fs = require('fs');
+    fs.writeFileSync(checksumFile, JSON.stringify(checksums, null, 2), { mode: 0o600 });
+}
+
+function updateChecksum(checksumFile, filePath) {
+    const checksums = loadChecksums(checksumFile);
+    const hash = computeChecksum(filePath);
+    if (hash) checksums[filePath] = hash;
+    else delete checksums[filePath];
+    saveChecksums(checksumFile, checksums);
+}
+
+function verifyAllChecksums(checksumFile) {
+    const checksums = loadChecksums(checksumFile);
+    const results = [];
+    for (const [filePath, expectedHash] of Object.entries(checksums)) {
+        const actualHash = computeChecksum(filePath);
+        if (!actualHash) {
+            results.push({ file: filePath, ok: false, error: 'file_missing' });
+        } else if (actualHash !== expectedHash) {
+            results.push({ file: filePath, ok: false, error: 'hash_mismatch', expected: expectedHash.slice(0, 16), actual: actualHash.slice(0, 16) });
+        } else {
+            results.push({ file: filePath, ok: true });
+        }
+    }
+    return results;
+}
+
 module.exports = {
     ensureCsrfToken,
     verifyCsrfRequest,
@@ -135,4 +292,16 @@ module.exports = {
     hashPassword,
     verifyPassword,
     normalizeAdminCredentials,
+    isStrongPassword,
+    recordLockEvent,
+    clearLockHistory,
+    AUTO_BAN_LOCK_THRESHOLD,
+    AUTO_BAN_WINDOW_MS,
+    AUTO_BAN_DURATION_MS,
+    getProgressiveDelayMs,
+    clearFailDelay,
+    appendAuditLine,
+    verifyAuditChain,
+    updateChecksum,
+    verifyAllChecksums,
 };

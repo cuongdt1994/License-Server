@@ -115,6 +115,66 @@ function buildSafeActionScript(id, opts = {}) {
     };
 }
 
+// ── Dangerous shell patterns ──────────────────────────────────────────────────
+// Blacklist các pattern có khả năng phá hủy hệ thống.
+// Mỗi pattern là RegExp — nếu khớp → reject command.
+const DANGEROUS_PATTERNS = [
+    // Fork bomb
+    /:\(\)\s*\{/,
+    // Xóa hệ thống filesystem
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/(\s|$)/,
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/etc(\s|$)/,
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/boot(\s|$)/,
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/sys(\s|$)/,
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/proc(\s|$)/,
+    /rm\s+.*\-\-no\-preserve\-root/,
+    // Ghi đè disk/partition
+    /\bdd\s+if=/,
+    /\bmkfs\b/,
+    /\bmkswap\b/,
+    /\bfdisk\b/,
+    /\bparted\b/,
+    // Redirect output ghi đè file hệ thống
+    />\s*\/etc\//,
+    />\s*\/boot\//,
+    />\s*\/sys\//,
+    // Xóa toàn bộ user data
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/home(\s|$)/,
+    /rm\s+.*(-rf?\s+|--recursive\s+)*\/root(\s|$)/,
+    // Fork bomb variants
+    /\bperl\s+-e\b/,
+    /\bpython.*-c\b.*fork/,
+    // Kernel module manipulation
+    /\bmodprobe\s+-r\b/,
+    /\brmmod\b/,
+    // IPTables flush
+    /iptables\s+-F\b/,
+    /iptables\s+--flush\b/,
+    // Shutdown/reboot
+    /\bshutdown\b/,
+    /\breboot\b/,
+    /\bpoweroff\b/,
+    /\bhalt\b/,
+    // Chmod hệ thống
+    /chmod\s+.*777\s+\//,
+    /chmod\s+.*-R\s+777/,
+    // Wget/curl pipe to shell without known URL
+    /curl.*\|.*(?:ba)?sh/,
+    /wget.*\|.*(?:ba)?sh/,
+    // Overwrite critical configs
+    />\s*\/etc\/systemd\//,
+    />\s*\/etc\/ssh\//,
+];
+
+function _checkDangerousPatterns(script) {
+    for (const pattern of DANGEROUS_PATTERNS) {
+        if (pattern.test(script)) {
+            return { blocked: true, pattern: pattern.toString().slice(1, -1) };
+        }
+    }
+    return { blocked: false };
+}
+
 function validateShellScript(script, opts = {}) {
     if (typeof script !== 'string') return { ok: false, error: 'empty' };
     if (script.includes('\0')) return { ok: false, error: 'invalid_bytes' };
@@ -122,6 +182,11 @@ function validateShellScript(script, opts = {}) {
     if (!normalized) return { ok: false, error: 'empty' };
     if (Buffer.byteLength(normalized, 'utf8') > MAX_SCRIPT_BYTES) {
         return { ok: false, error: 'too_large' };
+    }
+    // Check dangerous patterns
+    const danger = _checkDangerousPatterns(normalized);
+    if (danger.blocked) {
+        return { ok: false, error: `dangerous_pattern: ${danger.pattern}` };
     }
     return {
         ok: true,

@@ -400,6 +400,15 @@
               <div style="font-size:.72rem;color:var(--muted);margin-top:3px">
                 <%= row.currentPlayers %>/<%= row.max_players %> players
               </div>
+              <% if (row.pending_cfg) { %>
+              <div style="font-size:.7rem;color:#fbbf24;margin-top:2px" title="Cấu hình đang chờ đồng bộ xuống máy (≤5s)">
+                <i class="bi bi-arrow-repeat"></i>
+                <% if (row.pending_max) { %>max<% } %>
+                <% if (row.pending_max && row.pending_key) { %>+<% } %>
+                <% if (row.pending_key) { %>key<% } %>
+                pending
+              </div>
+              <% } %>
             <% } else { %>
               <span class="pill pill-gray">Offline</span>
             <% } %>
