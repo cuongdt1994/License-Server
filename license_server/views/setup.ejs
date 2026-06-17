@@ -55,6 +55,7 @@
   <% if (!result || !result.ok) { %>
   <div class="card">
     <form method="POST" action="/setup">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <div class="form-group">
         <label class="form-label">Tài khoản admin <span style="color:#ef4444">*</span></label>
         <input name="username" class="form-input" placeholder="VD: admin" required autofocus>

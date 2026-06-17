@@ -49,6 +49,7 @@
 
   <div class="card">
     <form method="POST" action="/portal">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <div class="form-group">
         <label class="form-label">Machine ID</label>
         <input name="mid" class="form-input" placeholder="aa:bb:cc:dd:ee:ff|hostname" required>

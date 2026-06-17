@@ -33,6 +33,7 @@
   <% } %>
 
   <form method="POST" action="/verify-2fa">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
     <input name="token" class="form-input" placeholder="000000" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required autofocus autocomplete="one-time-code">
     <button type="submit" class="btn btn-primary">✅ Xác nhận</button>
   </form>

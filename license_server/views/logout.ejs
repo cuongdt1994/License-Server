@@ -27,6 +27,7 @@
   <p>Bạn có chắc muốn đăng xuất khỏi License Manager?</p>
 
   <form method="POST" action="/logout">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
     <button type="submit" class="btn btn-danger">🚪 Đăng xuất</button>
   </form>
   <a href="/" class="btn btn-outline">← Quay lại Dashboard</a>
