@@ -46,6 +46,7 @@
   <p class="text-sm" style="color:var(--muted);margin-bottom:14px">Nhập mã 6 chữ số từ app để xác nhận.</p>
 
   <form method="POST" action="/settings/setup-2fa">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
     <input name="token" class="form-input" placeholder="000000" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required autofocus autocomplete="one-time-code">
     <button type="submit" class="btn btn-primary">✅ Xác nhận & Bật 2FA</button>
   </form>

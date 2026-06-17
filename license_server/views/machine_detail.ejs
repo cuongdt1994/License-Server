@@ -166,7 +166,7 @@ function runSafeAction(action) {
   if (!confirm('Chạy action: ' + action + '?')) return;
   fetch('/api/machine/<%= encodeURIComponent(mid) %>/safe-action', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': window._csrfToken || '' },
     body: JSON.stringify({ action: action })
   })
   .then(r => r.json())

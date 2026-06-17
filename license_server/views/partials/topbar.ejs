@@ -563,20 +563,24 @@
 
 <!-- CSRF injection -->
 <script>
-(() => {
-  const token = <%- JSON.stringify(typeof csrfToken !== 'undefined' ? csrfToken : '') %>;
-  if (token) {
-    document.querySelectorAll('form[method="POST"], form[method="post"]').forEach(form => {
-      if (!form.querySelector('input[name="_csrf"]')) {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = '_csrf';
-        input.value = token;
-        form.appendChild(input);
-      }
-    });
-  }
-  // Auto-dismiss alerts after 6s
+window._csrfToken = <%- JSON.stringify(typeof csrfToken !== 'undefined' ? csrfToken : '') %>;
+function injectCsrfTokens() {
+  const token = window._csrfToken;
+  if (!token) return;
+  document.querySelectorAll('form[method="POST"], form[method="post"]').forEach(form => {
+    if (!form.querySelector('input[name="_csrf"]')) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = '_csrf';
+      input.value = token;
+      form.appendChild(input);
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', injectCsrfTokens);
+// Also run immediately in case some forms are already parsed
+injectCsrfTokens();
+// Auto-dismiss alerts after 6s
   document.querySelectorAll('.alert').forEach(el => {
     setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 6000);
   });
