@@ -110,8 +110,18 @@ const TIERS = {
     unlimited: { label: 'Unlimited', color: '#34d399', bg: '#064e3b' },
 };
 const CIPHER = 'aes-256-gcm';
-const REPLAY_WINDOW_MS = 30 * 1000;        
-const seenNonces = new Map();              
+const REPLAY_WINDOW_MS = 30 * 1000;
+const seenNonces = new Map();
+const SEEN_NONCES_MAX = 50000;
+function checkAndRecordNonce(ivHex, now) {
+    if (seenNonces.has(ivHex)) return false;
+    if (seenNonces.size >= SEEN_NONCES_MAX) {
+        const oldest = seenNonces.keys().next().value;
+        if (oldest) seenNonces.delete(oldest);
+    }
+    seenNonces.set(ivHex, now + REPLAY_WINDOW_MS);
+    return true;
+}
 function tcpEncrypt(plain) {
     const iv  = crypto.randomBytes(12);
     const c   = crypto.createCipheriv(CIPHER, SECRET_KEY, iv);
@@ -139,9 +149,7 @@ function tcpDecrypt(line) {
         const ts = parseInt(out.slice(0, sep), 10);
         if (!ts || Math.abs(Date.now() - ts) > REPLAY_WINDOW_MS) return null;
         const now = Date.now();
-        for (const [k, exp] of seenNonces) if (exp < now) seenNonces.delete(k);
-        if (seenNonces.has(ivHex)) return null;
-        seenNonces.set(ivHex, now + REPLAY_WINDOW_MS);
+        if (!checkAndRecordNonce(ivHex, now)) return null;
         return out.slice(sep + 1);
     } catch { return null; }
 }
@@ -201,6 +209,7 @@ function saveJsonPrivate(file, data, pretty = true) {
 function saveBans(b) {
     saveJsonPrivate(BAN_FILE, b);
     updateChecksum(CHECKSUM_FILE, BAN_FILE);
+    invalidateBansCache();
 }
 function ipToInt(ip) { return ip.split('.').reduce((a, o) => ((a << 8) + parseInt(o, 10)) >>> 0, 0); }
 function isIpBanned(ip, bans) {
@@ -296,6 +305,7 @@ function loadSettings() {
 function saveSettings(s) {
     saveJsonPrivate(SETTINGS_FILE, s);
     updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
+    invalidateSettingsCache();
 }
 function loadPlans() {
     if (!fs.existsSync(PLANS_FILE)) return [];
@@ -342,7 +352,7 @@ function getGeoIP(ip) {
     if (geoCache[ip]) return Promise.resolve(geoCache[ip]);
     return new Promise(resolve => {
         const req = http.get(
-            `http://ip-api.com/json/${ip}?fields=status,country,countryCode,city`,
+            `http://ip-api.com/json/${ip}`,
             res => {
                 let body = '';
                 res.on('data', d => body += d);
@@ -474,8 +484,12 @@ setInterval(() => {
 }, 6 * 60 * 60 * 1000);
 setInterval(() => {
     const now = Date.now();
+    let cleaned = 0;
     for (const [k, exp] of seenNonces) {
-        if (exp < now) seenNonces.delete(k);
+        if (exp < now) { seenNonces.delete(k); cleaned++; }
+    }
+    if (cleaned > 1000 || seenNonces.size > SEEN_NONCES_MAX * 0.7) {
+        log('INFO', `Nonce cleanup: removed ${cleaned}, remaining ${seenNonces.size}/${SEEN_NONCES_MAX}`);
     }
 }, REPLAY_WINDOW_MS).unref();
 setInterval(() => {
@@ -537,18 +551,51 @@ scheduleDailyTask('weekly_report', 8, 0, () => {
     sendTelegram(msg);
     log('INFO', 'Weekly report sent');
 }, { dayOfWeek: 1 });
-// -- TCP License Server (Persistent, State-per-Socket) ------------------------
 const TCP_FRAME_MAX = 65536;
 const TCP_IDLE_TIMEOUT_MS = 120000;
 const TCP_DB_FLUSH_MS = 60 * 1000;
 const TCP_STATS_FLUSH_MS = 15 * 1000;
-
-// State per socket: Map<net.Socket, { mid, ip, authenticated, buf, lastHb }>
+const BANS_CACHE_TTL_MS    = 30000;
+const SETTINGS_CACHE_TTL_MS = 5000;
+let _bansCache       = null;
+let _bansCacheTs     = 0;
+let _settingsCache   = null;
+let _settingsCacheTs = 0;
+function getBansCached() {
+    const now = Date.now();
+    if (!_bansCache || now - _bansCacheTs > BANS_CACHE_TTL_MS) {
+        _bansCache = loadBans();
+        _bansCacheTs = now;
+    }
+    return _bansCache;
+}
+function getSettingsCached() {
+    const now = Date.now();
+    if (!_settingsCache || now - _settingsCacheTs > SETTINGS_CACHE_TTL_MS) {
+        _settingsCache = loadSettings();
+        _settingsCacheTs = now;
+    }
+    return _settingsCache;
+}
+function isMaintenanceActiveCached() {
+    const s = getSettingsCached();
+    if (!s.maintenance) return false;
+    if (s.maintenance_until && Date.now() > s.maintenance_until) {
+        s.maintenance = false; delete s.maintenance_until;
+        saveSettings(s);
+        _settingsCache = s;
+        _settingsCacheTs = Date.now();
+        log('INFO', 'Maintenance mode ended automatically');
+        return false;
+    }
+    return true;
+}
+function invalidateBansCache()  { _bansCache = null; _bansCacheTs = 0; }
+function invalidateSettingsCache() { _settingsCache = null; _settingsCacheTs = 0; }
 const tcpSockets = new Map();
 const activeTcpByMid = new Map();
 const _lastDbHbFlush = new Map();
 const _lastStatFlush = new Map();
-
 function tcpWrite(socket, plain, cb) {
     if (!socket || socket.destroyed || !socket.writable) return false;
     const payload = tcpEncrypt(plain);
@@ -562,19 +609,16 @@ function tcpWrite(socket, plain, cb) {
     });
     return true;
 }
-
 function tcpEnd(socket, plain) {
     if (!socket || socket.destroyed) return;
     try { socket.end(tcpEncrypt(plain)); }
     catch { try { socket.destroy(); } catch {} }
 }
-
 function tcpFailAndClose(socket, state, response, reason, { countFailure = true } = {}) {
     if (countFailure && state?.ip) tcpRlFail(state.ip);
     if (reason) log('WARNING', reason);
     tcpEnd(socket, response || 'DENY');
 }
-
 function shouldFlushStat(mid, players, ts) {
     const prev = _lastStatFlush.get(mid);
     if (!prev || ts - prev.ts >= TCP_STATS_FLUSH_MS) {
@@ -583,7 +627,6 @@ function shouldFlushStat(mid, players, ts) {
     }
     return false;
 }
-
 function closePreviousSocketForMid(mid, socket, ip) {
     const old = activeTcpByMid.get(mid);
     if (old && old !== socket && !old.destroyed) {
@@ -593,14 +636,11 @@ function closePreviousSocketForMid(mid, socket, ip) {
     }
     activeTcpByMid.set(mid, socket);
 }
-
 const tcpServer = net.createServer((socket) => {
     const ip = (socket.remoteAddress || '').replace('::ffff:', '') || '?';
     const state = { mid: null, ip, authenticated: false, buf: '', lastHb: Date.now() };
-
     const cur = (_tcpConnsPerIp.get(ip) || 0) + 1;
     _tcpConnsPerIp.set(ip, cur);
-
     socket.on('close', () => {
         tcpSockets.delete(socket);
         if (state.mid && activeTcpByMid.get(state.mid) === socket) activeTcpByMid.delete(state.mid);
@@ -608,29 +648,23 @@ const tcpServer = net.createServer((socket) => {
         if (n <= 0) _tcpConnsPerIp.delete(ip);
         else _tcpConnsPerIp.set(ip, n);
     });
-
     socket.on('error', err => {
         if (err && err.code !== 'ECONNRESET') log('WARNING', `TCP SOCKET ERROR ${ip}: ${err.message}`);
     });
     socket.setTimeout(TCP_IDLE_TIMEOUT_MS, () => socket.destroy());
-
     if (cur > TCP_MAX_CONCURRENT_PER_IP) {
         log('WARNING', `TCP TOO-MANY-CONNS ${ip} count=${cur}/${TCP_MAX_CONCURRENT_PER_IP}`);
         tcpEnd(socket, 'DENY');
         return;
     }
-
     tcpSockets.set(socket, state);
-
     socket.on('data', (chunk) => {
         if (socket.destroyed) return;
         state.buf += chunk.toString('utf8');
-
         if (state.buf.length > TCP_FRAME_MAX) {
             tcpFailAndClose(socket, state, 'DENY', `TCP BUFFER OVERFLOW ${ip} [${state.mid || '?'}] len=${state.buf.length}`);
             return;
         }
-
         let nl;
         while ((nl = state.buf.indexOf('\n')) !== -1) {
             const frame = state.buf.slice(0, nl + 1);
@@ -640,45 +674,36 @@ const tcpServer = net.createServer((socket) => {
         }
     });
 });
-
 function processTcpFrame(socket, state, frame) {
     const plain = tcpDecrypt(frame);
     if (!plain) {
         tcpFailAndClose(socket, state, 'DENY', `TCP DECRYPT FAIL ${state.ip} [${state.mid || '?'}]`);
         return;
     }
-
     const parts = plain.trim().split(/\s+/);
     const cmd   = (parts[0] || '').toUpperCase();
-
-    if (isIpBanned(state.ip, loadBans())) {
+    if (isIpBanned(state.ip, getBansCached())) {
         tcpFailAndClose(socket, state, 'DENY', `TCP BANNED  ${state.ip}`, { countFailure: false });
         return;
     }
-
-    if (isMaintenanceActive()) {
+    if (isMaintenanceActiveCached()) {
         tcpEnd(socket, 'MAINTENANCE');
         return;
     }
-
     if (tcpRlBlocked(state.ip)) {
         tcpEnd(socket, 'DENY');
         return;
     }
-
     if (cmd === 'AUTH' && !state.authenticated && parts[1]) {
         const mid     = parts[1];
         const sentKey = parts[2] || null;
-
         if (!isValidMachineId(mid)) {
             tcpFailAndClose(socket, state, 'DENY', `TCP AUTH DENY  ${state.ip}  [${mid}]  (invalid id)`);
             return;
         }
-
         const db = loadDB();
         let entry = db[mid];
         let justRegistered = false;
-
         if (!entry) {
             if (!autoRegisterEnabled()) {
                 tcpFailAndClose(socket, state, 'DENY', `TCP AUTH DENY  ${state.ip}  [${mid}]  (not registered)`);
@@ -696,7 +721,6 @@ function processTcpFrame(socket, state, frame) {
             log('INFO', `TCP AUTH AUTO  ${state.ip}  [${mid}]  tier=basic max=10  key=${newKey}`);
             sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${state.ip}\nTier: Basic · Max: 10 players · Khong gioi han ngay\nKey: ${newKey}`);
         }
-
         if (entry.revoked) {
             tcpFailAndClose(socket, state, 'DENY', `TCP AUTH DENY  ${state.ip}  [${mid}]  (revoked)`);
             return;
@@ -706,12 +730,10 @@ function processTcpFrame(socket, state, frame) {
             tcpFailAndClose(socket, state, 'DENY', `TCP AUTH DENY  ${state.ip}  [${mid}]  (expired)`);
             return;
         }
-
         if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
             tcpFailAndClose(socket, state, 'DENY', `TCP AUTH DENY  ${state.ip}  [${mid}]  (missing key in strict mode)`);
             return;
         }
-
         let shouldBootstrapKey = false;
         if (entry.license_key && !justRegistered) {
             const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
@@ -730,7 +752,6 @@ function processTcpFrame(socket, state, frame) {
             if (shouldBootstrapKey) log('INFO', `TCP AUTH BOOTSTRAP-KEY ${state.ip}  [${mid}]  -> sync license.key`);
             if (!shouldBootstrapKey && sentKey !== entry.license_key) log('INFO', `TCP AUTH OLD-KEY ${state.ip}  [${mid}]  -> sync new key`);
         }
-
         if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
             const allowed = entry.allowed_ips.some(a =>
                 a === state.ip || (a.endsWith('.*') && state.ip.startsWith(a.slice(0, -1)))
@@ -740,34 +761,28 @@ function processTcpFrame(socket, state, frame) {
                 return;
             }
         }
-
         if (active[mid] && active[mid].ip !== state.ip) {
             log('WARNING', `TCP AUTH MULTI-IP [${mid}]  prev=${active[mid].ip}  new=${state.ip}`);
             sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${state.ip}\n— Possible license sharing —`);
             dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: state.ip });
         }
-
         const maxPl = getMaxPlayers(entry);
         const token = makeToken(mid, maxPl);
         const agentTok = agent.getOrCreateToken(mid);
         const needSyncKey = justRegistered || shouldBootstrapKey || (entry.license_key && sentKey && sentKey !== entry.license_key);
-
         let resp = `OK MAX:${maxPl} TOKEN:${token}`;
         if (needSyncKey && entry.license_key) resp += ` KEY:${entry.license_key}`;
         if (agentTok) resp += ` AGENT:${agentTok}`;
-
         closePreviousSocketForMid(mid, socket, state.ip);
         state.mid = mid;
         state.authenticated = true;
         state.lastHb = Date.now();
-
         if (!tcpWrite(socket, resp, err => {
             if (err) log('WARNING', `TCP AUTH WRITE FAIL ${state.ip} [${mid}]: ${err.message}`);
         })) {
             socket.destroy();
             return;
         }
-
         const wasOnline = !!active[mid];
         active[mid] = {
             ip: state.ip,
@@ -775,45 +790,36 @@ function processTcpFrame(socket, state, frame) {
             last_seen: now(),
             uptime_start: active[mid]?.uptime_start || now(),
         };
-
         if (!wasOnline) {
             pushHistory({ mid, event: 'online', ip: state.ip });
             sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${state.ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
             dispatchWebhook('machine.online', { mid, ip: state.ip, tier: entry.tier, max_players: maxPl });
         }
-
         if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
         tcpRlSuccess(state.ip);
         log('INFO', `TCP AUTH OK   ${state.ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
-
         getGeoIP(state.ip).then(geo => {
             if (geo && active[mid]) active[mid].geo = geo;
         });
-
         if (agentTok) agent.ensureInstalled(mid, agentTok);
         return;
     }
-
     if (cmd === 'HB' && state.authenticated && parts[1] && parts[2] !== undefined) {
         const mid = parts[1];
         const cnt = parseInt(parts[2], 10);
-
         if (mid !== state.mid) {
             tcpFailAndClose(socket, state, 'DENY', `TCP HB MID-MISMATCH ${state.ip} claimed=${mid} actual=${state.mid}`);
             return;
         }
-
         if (activeTcpByMid.get(mid) !== socket) {
             log('INFO', `TCP HB STALE-SOCKET ${state.ip} [${mid}] closing old connection`);
             socket.destroy();
             return;
         }
-
         if (!Number.isFinite(cnt) || cnt < 0 || cnt > 100000) {
             tcpFailAndClose(socket, state, 'DENY', `TCP HB INVALID-COUNT ${state.ip} [${mid}] cnt=${parts[2]}`);
             return;
         }
-
         const db = loadDB();
         const entry = db[mid];
         if (!entry || entry.revoked) {
@@ -838,11 +844,9 @@ function processTcpFrame(socket, state, frame) {
             log('WARNING', `TCP HB REVOKE ${state.ip}  [${mid}]  (expired)`);
             return;
         }
-
         const maxPl = getMaxPlayers(entry);
         const ts = Date.now();
         let dbDirty = false;
-
         if (cnt > maxPl) {
             if (!entry._alertOver) {
                 entry._alertOver = true;
@@ -855,12 +859,10 @@ function processTcpFrame(socket, state, frame) {
             entry._alertOver = false;
             dbDirty = true;
         }
-
         if (cnt > (entry.peak_players || 0)) {
             entry.peak_players = cnt;
             dbDirty = true;
         }
-
         if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
             entry._alert80 = true;
             dbDirty = true;
@@ -870,18 +872,14 @@ function processTcpFrame(socket, state, frame) {
             entry._alert80 = false;
             dbDirty = true;
         }
-
         if (active[mid] && active[mid].ip && active[mid].ip !== state.ip) {
             log('WARNING', `TCP HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${state.ip}`);
         }
-
         let resp = `OK MAX:${maxPl}`;
         const pendingMax = _pendingMaxPlayers.get(mid);
         const pendingKey = _pendingKey.get(mid);
-
         if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) resp += ` CFGMAX:${pendingMax}`;
         if (pendingKey !== undefined && pendingKey.length === 32) resp += ` KEY:${pendingKey}`;
-
         if (!tcpWrite(socket, resp, err => {
             if (err) {
                 log('WARNING', `TCP HB WRITE FAIL ${state.ip} [${mid}]: ${err.message}`);
@@ -899,7 +897,6 @@ function processTcpFrame(socket, state, frame) {
             socket.destroy();
             return;
         }
-
         state.lastHb = ts;
         active[mid] = {
             ...active[mid],
@@ -908,7 +905,6 @@ function processTcpFrame(socket, state, frame) {
             last_seen: now(),
             uptime_start: active[mid]?.uptime_start || now(),
         };
-
         entry.last_hb_ts = ts;
         const lastDbFlush = _lastDbHbFlush.get(mid) || 0;
         if (dbDirty || ts - lastDbFlush >= TCP_DB_FLUSH_MS) {
@@ -917,16 +913,17 @@ function processTcpFrame(socket, state, frame) {
             _lastDbHbFlush.set(mid, ts);
         }
         if (shouldFlushStat(mid, cnt, ts)) pushStat(mid, cnt);
-
         log('INFO', `TCP HB OK     ${state.ip}  [${mid}]  players=${cnt}/${maxPl}${pendingMax ? ' +CFGMAX' : ''}${pendingKey ? ' +KEY' : ''}`);
         return;
     }
-
     tcpFailAndClose(socket, state, 'DENY', `TCP UNKNOWN  ${state.ip}  cmd=${cmd}  auth=${state.authenticated}  mid=${state.mid || '?'}`);
 }
-
-tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM (persistent, state-per-socket)`));
-
+tcpServer.maxConnections = 5000;
+tcpServer.on('error', (err) => {
+    log('ERROR', `TCP server fatal: ${err.message}`);
+    process.exit(1);
+});
+tcpServer.listen(TCP_PORT, BIND_HOST, 1024, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM (persistent, state-per-socket, backlog=1024, maxConn=5000)`));
 const app        = express();
 const httpServer = http.createServer(app);
 app.disable('x-powered-by');
@@ -1802,7 +1799,7 @@ app.post('/machine/:mid/agent-install', auth, (req, res) => {
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Machine chưa được cấp license.' }; return res.redirect('/machines'); }
     const tok = agent.getOrCreateToken(mid);
     if (req.body.server_dir) agent.setServerDir(mid, req.body.server_dir);
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '')
+    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host')));
     const oneLiner = `curl -fsSL "${base}/agent/install.sh?mid=${encodeURIComponent(mid)}&token=${tok}" | sudo bash`;
     req.session.flash = {
         type: 'success',
@@ -1845,7 +1842,7 @@ app.get('/agent/install.sh', (req, res) => {
     if (!mid || !token || !agent.verifyToken(mid, token)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '')
+    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host')));
     res.type('text/plain').send(
         require('./agent_manager').buildInstallScript({ serverUrl: base, mid, token })
     );
@@ -1996,7 +1993,11 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
     if (!r) return res.status(204).end();
     res.json(r);
 });
-httpServer.listen(WEB_PORT, BIND_HOST, () => {
+httpServer.on('error', (err) => {
+    log('ERROR', `HTTP server fatal: ${err.message}`);
+    process.exit(1);
+});
+httpServer.listen(WEB_PORT, BIND_HOST, 511, () => {
     log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
     const auditMigrate = migrateAuditChainIfNeeded(AUDIT_FILE);
