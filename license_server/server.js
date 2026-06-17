@@ -559,6 +559,13 @@ setInterval(() => {
             dispatchWebhook('machine.offline', { mid, ip: info.ip, reason: 'timeout' });
             wsBroadcast('machine.offline', { mid });
             delete active[mid];
+            // [FIX B16] Đóng WS connection nếu vẫn còn mở — tránh server
+            // tiếp tục push message tới client đã được đánh dấu offline.
+            const staleWs = wsClients.get(mid);
+            if (staleWs) {
+                try { staleWs.ws.close(4005, 'License timeout'); } catch {}
+                wsClients.delete(mid);
+            }
         }
     }
 }, 60 * 1000);
@@ -579,15 +586,16 @@ setInterval(() => {
     if (changed) saveDB(db);
 }, 6 * 60 * 60 * 1000);
 
-// ── Replay nonce cleanup (60s) ─────────────────────────────────────────────────
+// ── Replay nonce cleanup (30s) ─────────────────────────────────────────────────
 // seenNonces map có thể grow unbounded nếu không cleanup định kỳ.
-// Mỗi 60s quét và xóa nonces đã hết hạn.
+// [FIX B13] Giảm từ 60s → 30s = đúng bằng REPLAY_WINDOW_MS để nonces hết hạn
+// được dọn nhanh hơn, tránh map phình to khi burst replay attack.
 setInterval(() => {
     const now = Date.now();
     for (const [k, exp] of seenNonces) {
         if (exp < now) seenNonces.delete(k);
     }
-}, 60 * 1000).unref();
+}, REPLAY_WINDOW_MS).unref();
 
 // ── Auto-ban expiry cleanup (hourly) ──────────────────────────────────────────
 // Tự động gỡ ban khi hết thời hạn auto-ban (24h).
@@ -1060,13 +1068,28 @@ wss.on('connection', (ws, req) => {
                 ws.close(4003, 'Missing key'); return;
             }
 
-            if (STRICT_LICENSE_KEY && sentKey && entry.license_key) {
-                const validKey = (sentKey === entry.license_key);
-                const shouldBootstrapKey = !validKey && canBootstrapLicenseKey(entry, sentKey);
+            // [FIX B12] WS AUTH: mirror TCP path — kiểm tra previous_keys grace window.
+            // TCP path chấp nhận key cũ trong 24h (previous_keys[]) sau khi rotate.
+            // WS path cũ chỉ so sánh sentKey === entry.license_key → DENY ngay sau rotate.
+            // Fix: dùng cùng logic với TCP (previous_keys + bootstrap).
+            if (entry.license_key && !justRegistered) {
+                const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
+                const validKey = sentKey && (
+                    sentKey === entry.license_key ||
+                    prev.some(p => p && p.key === sentKey && (!p.expires_at || p.expires_at > Date.now()))
+                );
+                const shouldBootstrapKey = canBootstrapLicenseKey(entry, {
+                    sentKey,
+                    justRegistered,
+                    enabled: licenseKeyBootstrapEnabled(),
+                });
                 if (!validKey && !shouldBootstrapKey) {
                     sendMsg('DENY');
                     log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (wrong key)`);
                     ws.close(4003, 'Wrong key'); return;
+                }
+                if (shouldBootstrapKey) {
+                    log('INFO', `WS AUTH BOOTSTRAP-KEY ${ip}  [${_mid}]  -> will sync key`);
                 }
             }
 
