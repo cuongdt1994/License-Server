@@ -47,11 +47,8 @@ const {
 const agent     = require('./agent_manager');
 const commandPolicy = require('./command_policy');
 const { createDeployManager } = require('./deploy_manager');
-const { WebSocketServer } = require('ws');
-
-// ── Cấu hình ──────────────────────────────────────────────────────────────────
 const RUNTIME         = buildRuntimeConfig();
-const TCP_PORT        = RUNTIME.tcpPort;
+const TCP_PORT        = 27500;
 const WEB_PORT        = RUNTIME.webPort;
 const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
@@ -71,13 +68,8 @@ const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
 const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
-
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
-const DEFAULT_PLAYERS = 10;  // Basic tier: 10 players
-
-// ── Safe max_players resolver ─────────────────────────────────────────────────
-// Luôn trả về số nguyên dương. Không bao giờ trả về 0.
-// Xử lý cả string "0" (truthy trong JS nên || không catch được).
+const DEFAULT_PLAYERS = 10;  
 function getMaxPlayers(entry) {
     if (!entry) return DEFAULT_PLAYERS;
     if (entry.tier === 'unlimited') return 9999;
@@ -85,8 +77,6 @@ function getMaxPlayers(entry) {
     if (!Number.isFinite(mp) || mp <= 0) return DEFAULT_PLAYERS;
     return mp;
 }
-
-// Quét và sửa toàn bộ DB: đảm bảo max_players luôn là number > 0
 function repairDBMaxPlayers() {
     const db = loadDB();
     let changed = false;
@@ -109,27 +99,19 @@ function repairDBMaxPlayers() {
         log('INFO', `DB repaired: fixed max_players → ${DEFAULT_PLAYERS} for entries with invalid/zero values`);
     }
 }
-
-const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
+const MAX_STATS_PER_MACHINE = 720;   
 const MAX_HISTORY     = 1000;
-const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
+const ZOMBIE_DAYS     = 30;          
 const deployManager   = createDeployManager({ cwd: __dirname, historyFile: path.join(DATA_DIR, 'deploy_history.json') });
-
-// ── Tier system ───────────────────────────────────────────────────────────────
 const TIERS = {
     trial:     { label: 'Trial',     color: '#fbbf24', bg: '#451a03' },
     basic:     { label: 'Basic',     color: '#60a5fa', bg: '#1e3a5f' },
     pro:       { label: 'Pro',       color: '#a78bfa', bg: '#2e1065' },
     unlimited: { label: 'Unlimited', color: '#34d399', bg: '#064e3b' },
 };
-
-// ── AES-256-GCM TCP encryption (AEAD) + timestamp anti-replay ────────────────
-// Wire format: HEX(iv12):HEX(tag16):HEX(ciphertext)\n
-// Plaintext format: "<unix_ms>|<payload>"  → reject nếu lệch > REPLAY_WINDOW_MS
 const CIPHER = 'aes-256-gcm';
-const REPLAY_WINDOW_MS = 30 * 1000;        // 30s
-const seenNonces = new Map();              // iv_hex → expireAt (chống replay đúng nghĩa)
-
+const REPLAY_WINDOW_MS = 30 * 1000;        
+const seenNonces = new Map();              
 function tcpEncrypt(plain) {
     const iv  = crypto.randomBytes(12);
     const c   = crypto.createCipheriv(CIPHER, SECRET_KEY, iv);
@@ -138,7 +120,6 @@ function tcpEncrypt(plain) {
     const tag = c.getAuthTag();
     return iv.toString('hex') + ':' + tag.toString('hex') + ':' + enc.toString('hex') + '\n';
 }
-
 function tcpDecrypt(line) {
     try {
         const t = line.trim();
@@ -146,33 +127,24 @@ function tcpDecrypt(line) {
         if (parts.length !== 3) return null;
         const ivHex  = parts[0], tagHex = parts[1], encHex = parts[2];
         if (ivHex.length !== 24 || tagHex.length !== 32 || !encHex.length) return null;
-
         const iv  = Buffer.from(ivHex,  'hex');
         const tag = Buffer.from(tagHex, 'hex');
         const enc = Buffer.from(encHex, 'hex');
         if (iv.length !== 12 || tag.length !== 16) return null;
-
         const d = crypto.createDecipheriv(CIPHER, SECRET_KEY, iv);
         d.setAuthTag(tag);
         const out = Buffer.concat([d.update(enc), d.final()]).toString('utf8');
-
-        // Tách timestamp
         const sep = out.indexOf('|');
         if (sep < 0) return null;
         const ts = parseInt(out.slice(0, sep), 10);
         if (!ts || Math.abs(Date.now() - ts) > REPLAY_WINDOW_MS) return null;
-
-        // Chống replay nonce: từ chối nếu IV đã từng dùng
         const now = Date.now();
         for (const [k, exp] of seenNonces) if (exp < now) seenNonces.delete(k);
         if (seenNonces.has(ivHex)) return null;
         seenNonces.set(ivHex, now + REPLAY_WINDOW_MS);
-
         return out.slice(sep + 1);
     } catch { return null; }
 }
-
-// ── Rate limiting (Web login) ─────────────────────────────────────────────────
 const loginAttempts = {};
 const MAX_ATTEMPTS = 5, LOCK_MS = 15 * 60 * 1000;
 function rl_check(ip) {
@@ -188,7 +160,6 @@ function rl_fail(ip) {
     if (++e.count >= MAX_ATTEMPTS) { e.lockedUntil = Date.now() + LOCK_MS; e.count = 0; }
 }
 function rl_clear(ip) { delete loginAttempts[ip]; }
-
 const portalAttempts = {};
 const PORTAL_MAX_ATTEMPTS = 20, PORTAL_LOCK_MS = 10 * 60 * 1000;
 function portalRlCheck(ip) {
@@ -203,10 +174,8 @@ function portalRlFail(ip) {
     if (++e.count >= PORTAL_MAX_ATTEMPTS) { e.lockedUntil = Date.now() + PORTAL_LOCK_MS; e.count = 0; }
 }
 function portalRlClear(ip) { delete portalAttempts[ip]; }
-
-// ── TCP Rate limiting per IP ──────────────────────────────────────────────────
 const tcpAttempts = {};
-const TCP_MAX = 8, TCP_LOCK_MS = 5 * 60 * 1000;  // Giảm từ 15 → 8 (với realtime HB 5s, traffic ít hơn)
+const TCP_MAX = 8, TCP_LOCK_MS = 5 * 60 * 1000;  
 function tcpRlBlocked(ip) {
     const e = tcpAttempts[ip];
     if (!e) return false;
@@ -221,8 +190,6 @@ function tcpRlFail(ip) {
     if (++e.count >= TCP_MAX) e.lockedUntil = Date.now() + TCP_LOCK_MS;
 }
 function tcpRlSuccess(ip) { delete tcpAttempts[ip]; }
-
-// ── IP Ban ────────────────────────────────────────────────────────────────────
 function loadBans() {
     if (!fs.existsSync(BAN_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(BAN_FILE, 'utf8')); } catch { return {}; }
@@ -249,8 +216,6 @@ function isIpBanned(ip, bans) {
     }
     return false;
 }
-
-// ── Expiry helpers ────────────────────────────────────────────────────────────
 function getExpiryDate(entry) {
     let d = null;
     if (entry.tier === 'trial' && entry.trial_days && entry.added) {
@@ -270,12 +235,8 @@ function expiryInfo(entry) {
     const daysLeft = Math.ceil((d - new Date()) / 86400000);
     return { date: d.toISOString().slice(0, 10), daysLeft };
 }
-
-// ── Init dirs ─────────────────────────────────────────────────────────────────
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
-
-// ── Logging ───────────────────────────────────────────────────────────────────
 function loadAdminCredentials() {
     const envUser = (process.env.LICENSE_WEB_USER || '').trim();
     const envPass = (process.env.LICENSE_WEB_PASS || '').trim();
@@ -299,7 +260,6 @@ function loadAdminCredentials() {
     }
     return null;
 }
-
 let adminCreds = loadAdminCredentials();
 let setupRequired = !adminCreds;
 let WEB_USER = adminCreds?.user || null;
@@ -308,13 +268,11 @@ function verifyAdminLogin(username, password) {
     if (username !== WEB_USER) return false;
     return verifyPassword(password, adminCreds.pass_hash);
 }
-
 function log(level, msg) {
     const line = `${new Date().toISOString().replace('T', ' ').slice(0, 19)}  ${level.padEnd(7)}  ${msg}`;
     console.log(line);
     fs.appendFileSync(LOG_FILE, line + '\n');
 }
-
 function audit(req, action, details = {}) {
     try {
         appendAuditLine(AUDIT_FILE, { action, user: WEB_USER, ip: clientIp(req), details });
@@ -322,8 +280,6 @@ function audit(req, action, details = {}) {
         log('WARNING', `AUDIT FAIL action=${action} err=${e.message}`);
     }
 }
-
-// ── Database ──────────────────────────────────────────────────────────────────
 function loadDB() {
     if (!fs.existsSync(DB_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return {}; }
@@ -333,8 +289,6 @@ function saveDB(db) {
     updateChecksum(CHECKSUM_FILE, DB_FILE);
 }
 function now() { return new Date().toLocaleString('sv').replace('T', ' '); }
-
-// ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
     if (!fs.existsSync(SETTINGS_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
@@ -343,8 +297,6 @@ function saveSettings(s) {
     saveJsonPrivate(SETTINGS_FILE, s);
     updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
 }
-
-// ── Plans ─────────────────────────────────────────────────────────────────────
 function loadPlans() {
     if (!fs.existsSync(PLANS_FILE)) return [];
     try { return JSON.parse(fs.readFileSync(PLANS_FILE, 'utf8')); } catch { return []; }
@@ -353,8 +305,6 @@ function savePlans(p) {
     saveJsonPrivate(PLANS_FILE, p);
     updateChecksum(CHECKSUM_FILE, PLANS_FILE);
 }
-
-// ── Stats (time-series) ───────────────────────────────────────────────────────
 function loadStats() {
     if (!fs.existsSync(STATS_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); } catch { return {}; }
@@ -366,8 +316,6 @@ function pushStat(mid, players) {
     if (s[mid].length > MAX_STATS_PER_MACHINE) s[mid] = s[mid].slice(-MAX_STATS_PER_MACHINE);
     saveJsonPrivate(STATS_FILE, s, false);
 }
-
-// ── History ───────────────────────────────────────────────────────────────────
 function loadHistory() {
     if (!fs.existsSync(HISTORY_FILE)) return [];
     try { return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')); } catch { return []; }
@@ -378,13 +326,9 @@ function pushHistory(entry) {
     if (h.length > MAX_HISTORY) h.splice(0, h.length - MAX_HISTORY);
     saveJsonPrivate(HISTORY_FILE, h, false);
 }
-
-// ── License key generation ────────────────────────────────────────────────────
 function generateLicenseKey() {
     return crypto.randomBytes(16).toString('hex').toUpperCase();
 }
-
-// ── GeoIP (ip-api.com free, no package needed) ────────────────────────────────
 const geoCache = {};
 function getGeoIP(ip) {
     if (!ip || ip === '?' || ip === '127.0.0.1' || ip.startsWith('10.') || ip.startsWith('192.168.'))
@@ -392,7 +336,7 @@ function getGeoIP(ip) {
     if (geoCache[ip]) return Promise.resolve(geoCache[ip]);
     return new Promise(resolve => {
         const req = http.get(
-            `http://ip-api.com/json/${ip}?fields=status,country,countryCode,city`,
+            `http:
             res => {
                 let body = '';
                 res.on('data', d => body += d);
@@ -412,8 +356,6 @@ function getGeoIP(ip) {
         req.setTimeout(3000, () => { req.destroy(); resolve(null); });
     });
 }
-
-// ── Telegram notifications ────────────────────────────────────────────────────
 function sendTelegram(msg) {
     const s = loadSettings();
     if (!s.telegram_token || !s.telegram_chat_id) return;
@@ -428,8 +370,6 @@ function sendTelegram(msg) {
     req.on('error', () => {});
     req.write(body); req.end();
 }
-
-// ── Webhook dispatch ──────────────────────────────────────────────────────────
 function dispatchWebhook(event, data) {
     const s = loadSettings();
     if (!Array.isArray(s.webhooks) || !s.webhooks.length) return;
@@ -448,31 +388,24 @@ function dispatchWebhook(event, data) {
         } catch {}
     }
 }
-
 function shellEnabled() {
     return loadSettings().advanced_shell_enabled === true;
 }
-
 function defaultShellTimeout() {
     return commandPolicy.clampTimeout(loadSettings().agent_shell_timeout || 120, 120);
 }
-
 function enqueueAgentCommand(mid, kind, payload) {
     const timeoutSec = commandPolicy.clampTimeout(payload?.timeoutSec, 300);
     const script = commandPolicy.wrapWithTimeout(payload?.script || '', timeoutSec);
     return agent.enqueueCommand(mid, kind, { ...payload, script, timeoutSec });
 }
-
 function autoRegisterEnabled(env = process.env) {
     return !/^(0|false|no|off)$/i.test(String(env.LICENSE_AUTO_REGISTER || '').trim());
 }
-
 function csvSafeCell(value) {
     const text = String(value ?? '');
     return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
 }
-
-// ── Maintenance mode (persistent via settings) ────────────────────────────────
 function isMaintenanceActive() {
     const s = loadSettings();
     if (!s.maintenance) return false;
@@ -483,8 +416,6 @@ function isMaintenanceActive() {
     }
     return true;
 }
-
-// ── Backup ────────────────────────────────────────────────────────────────────
 let _lastBackupDate = '';
 function doBackup() {
     const today = new Date().toISOString().slice(0, 10);
@@ -493,61 +424,21 @@ function doBackup() {
     if (!fs.existsSync(DB_FILE)) return;
     const dest = path.join(BACKUP_DIR, `whitelist_${today}.json`);
     fs.copyFileSync(DB_FILE, dest);
-    // Keep last 30 backups
     const list = fs.readdirSync(BACKUP_DIR)
         .filter(f => f.startsWith('whitelist_') && f.endsWith('.json'))
         .sort();
     while (list.length > 30) fs.unlinkSync(path.join(BACKUP_DIR, list.shift()));
     log('INFO', `Backup → ${dest}`);
 }
-
 const CHECKSUM_FILE   = path.join(DATA_DIR, '.checksums.json');
-
-// ── Active servers map ────────────────────────────────────────────────────────
 const active = {};
-
-// ── Pending config change maps (CFGMAX + KEY real-time push) ──────────────────
-// Khi admin thay đổi max_players hoặc license key trên web UI, thay đổi được
-// đánh dấu "pending" ở đây. Lần heartbeat tiếp theo (≤5s với client mới),
-// server gửi CFGMAX:<n> và/hoặc KEY:<hex> kèm trong HB response, sau đó
-// clear pending flag. Điều này cho phép config thay đổi có hiệu lực gần như
-// ngay lập tức mà không cần restart game server.
-const _pendingMaxPlayers = new Map(); // mid → newValue
-const _pendingKey        = new Map(); // mid → newKey
-
-// ── TCP connection tracking ───────────────────────────────────────────────────
-const _tcpConnsPerIp = new Map();     // ip → count
-const TCP_MAX_CONCURRENT_PER_IP = 10; // Từ chối connection mới nếu vượt quá
-
-// ── HMAC token ────────────────────────────────────────────────────────────────
+const _pendingMaxPlayers = new Map(); 
+const _pendingKey        = new Map(); 
+const _tcpConnsPerIp = new Map();     
+const TCP_MAX_CONCURRENT_PER_IP = 10; 
 function makeToken(mid, maxPl) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`${mid}|${maxPl}`).digest('hex');
 }
-
-// ── WebSocket realtime clients map ──────────────────────────────────────────────
-// mid → { ws, ip, players, authenticated, last_seen }
-const wsClients = new Map();
-
-// Push realtime config change tới game server qua WebSocket (nếu đang kết nối)
-function wsPushToClient(mid, message) {
-    const client = wsClients.get(mid);
-    if (!client || client.ws.readyState !== 1) return false;
-    try {
-        client.ws.send(tcpEncrypt(message));
-        return true;
-    } catch (e) {
-        log('WARNING', `WS PUSH FAIL [${mid}]: ${e.message}`);
-        return false;
-    }
-}
-
-// Broadcast trạng thái cho web UI (nếu cần websocket browser sau này)
-function wsBroadcast(event, data) {
-    // Web UI hiện tại dùng poll — để sẵn interface cho tương lai
-    // wsPushToAllClients(JSON.stringify({ event, data }));
-}
-
-// ── Offline detector (5 min timeout) ─────────────────────────────────────────
 setInterval(() => {
     const cutoff = Date.now() - 5 * 60 * 1000;
     for (const [mid, info] of Object.entries(active)) {
@@ -557,20 +448,11 @@ setInterval(() => {
             log('INFO', `OFFLINE     [${mid}]  ip=${info.ip}  (timeout)`);
             sendTelegram(`🔴 <b>Server Offline</b>\n<code>${mid}</code>\nIP: ${info.ip}\nReason: heartbeat timeout`);
             dispatchWebhook('machine.offline', { mid, ip: info.ip, reason: 'timeout' });
-            wsBroadcast('machine.offline', { mid });
             delete active[mid];
-            // [FIX B16] Đóng WS connection nếu vẫn còn mở — tránh server
-            // tiếp tục push message tới client đã được đánh dấu offline.
-            const staleWs = wsClients.get(mid);
-            if (staleWs) {
-                try { staleWs.ws.close(4005, 'License timeout'); } catch {}
-                wsClients.delete(mid);
             }
         }
     }
 }, 60 * 1000);
-
-// ── Zombie license detector (offline > ZOMBIE_DAYS) ───────────────────────────
 setInterval(() => {
     const db = loadDB();
     let changed = false;
@@ -585,20 +467,12 @@ setInterval(() => {
     }
     if (changed) saveDB(db);
 }, 6 * 60 * 60 * 1000);
-
-// ── Replay nonce cleanup (30s) ─────────────────────────────────────────────────
-// seenNonces map có thể grow unbounded nếu không cleanup định kỳ.
-// [FIX B13] Giảm từ 60s → 30s = đúng bằng REPLAY_WINDOW_MS để nonces hết hạn
-// được dọn nhanh hơn, tránh map phình to khi burst replay attack.
 setInterval(() => {
     const now = Date.now();
     for (const [k, exp] of seenNonces) {
         if (exp < now) seenNonces.delete(k);
     }
 }, REPLAY_WINDOW_MS).unref();
-
-// ── Auto-ban expiry cleanup (hourly) ──────────────────────────────────────────
-// Tự động gỡ ban khi hết thời hạn auto-ban (24h).
 setInterval(() => {
     const bans = loadBans();
     let changed = false;
@@ -612,8 +486,6 @@ setInterval(() => {
     }
     if (changed) saveBans(bans);
 }, 60 * 60 * 1000).unref();
-
-// ── Agent token expiry check (daily 9:00 AM) ──────────────────────────────────
 scheduleDailyTask('agent_token_expiry', 9, 5, () => {
     const expiring = agent.checkExpiringTokens();
     if (expiring.length > 0) {
@@ -621,8 +493,6 @@ scheduleDailyTask('agent_token_expiry', 9, 5, () => {
         sendTelegram(`🔑 <b>Agent Token sắp hết hạn</b>\n${list}\n\nCần chạy lại lệnh cài đặt agent để cấp token mới.`);
     }
 });
-
-// ── Cron: daily backup 3:00 AM ────────────────────────────────────────────────
 function scheduleDailyTask(name, hour, minute, fn, { dayOfWeek = null } = {}) {
     let lastRunKey = '';
     setInterval(() => {
@@ -635,10 +505,7 @@ function scheduleDailyTask(name, hour, minute, fn, { dayOfWeek = null } = {}) {
         try { fn(); } catch (e) { log('ERROR', `${name} failed: ${e.message}`); }
     }, 60 * 1000).unref();
 }
-
 scheduleDailyTask('daily_backup', 3, 0, doBackup);
-
-// ── Cron: expiry warning 9:00 AM daily ───────────────────────────────────────
 scheduleDailyTask('expiry_warning', 9, 0, () => {
     const db = loadDB();
     for (const [mid, entry] of Object.entries(db)) {
@@ -651,8 +518,6 @@ scheduleDailyTask('expiry_warning', 9, 0, () => {
         }
     }
 });
-
-// ── Cron: weekly report Monday 8:00 AM ───────────────────────────────────────
 scheduleDailyTask('weekly_report', 8, 0, () => {
     const db = loadDB();
     const total = Object.keys(db).length;
@@ -667,610 +532,391 @@ scheduleDailyTask('weekly_report', 8, 0, () => {
     sendTelegram(msg);
     log('INFO', 'Weekly report sent');
 }, { dayOfWeek: 1 });
+// ── TCP License Server (Persistent, State-per-Socket) ─────────────────────
+const TCP_FRAME_MAX = 65536;
 
-// ── TCP License Server ────────────────────────────────────────────────────────
+// State per socket: Map<net.Socket, { mid, ip, authenticated, buf, lastHb }>
+const tcpSockets = new Map();
+
 const tcpServer = net.createServer((socket) => {
     const ip = (socket.remoteAddress || '').replace('::ffff:', '') || '?';
 
-    // ── TCP connection tracking ────────────────────────────────────────────
-    // Giới hạn số connection đồng thời trên mỗi IP để chống DDoS.
-    const currentConns = (_tcpConnsPerIp.get(ip) || 0) + 1;
-    _tcpConnsPerIp.set(ip, currentConns);
-    if (currentConns > TCP_MAX_CONCURRENT_PER_IP) {
+    // ── Rate limit per IP ──
+    const cur = (_tcpConnsPerIp.get(ip) || 0) + 1;
+    _tcpConnsPerIp.set(ip, cur);
+    if (cur > TCP_MAX_CONCURRENT_PER_IP) {
         socket.write(tcpEncrypt('DENY'));
-        socket.destroy();
+        socket.end();
         return;
     }
 
-    socket.setTimeout(15000);
-    let buf = '';
+    // ── Create socket state ──
+    const state = { mid: null, ip, authenticated: false, buf: '', lastHb: Date.now() };
+    tcpSockets.set(socket, state);
+    socket.setTimeout(120000); // 2 min idle timeout
 
+    // ── data: stream parser ──
+    socket.on('data', (chunk) => {
+        state.buf += chunk.toString();
+
+        // Buffer limit — chong socket treo / spam
+        if (state.buf.length > TCP_FRAME_MAX) {
+            log('WARNING', `TCP BUFFER OVERFLOW ${ip} [${state.mid || '?'}]  len=${state.buf.length}`);
+            socket.write(tcpEncrypt('DENY'));
+            socket.end();
+            return;
+        }
+
+        let nl;
+        while ((nl = state.buf.indexOf('\n')) !== -1) {
+            const frame = state.buf.slice(0, nl + 1);
+            state.buf = state.buf.slice(nl + 1);
+            processTcpFrame(socket, state, frame);
+            if (socket.destroyed) return;
+        }
+    });
+
+    // ── close: cleanup ──
     socket.on('close', () => {
+        tcpSockets.delete(socket);
         const n = (_tcpConnsPerIp.get(ip) || 1) - 1;
         if (n <= 0) _tcpConnsPerIp.delete(ip);
         else _tcpConnsPerIp.set(ip, n);
     });
 
-    socket.on('data', (chunk) => {
-        buf += chunk.toString();
-        const nl = buf.indexOf('\n');
-        if (nl === -1 && buf.length < 1024) return;
-        const raw = buf.slice(0, nl === -1 ? buf.length : nl + 1);
-        buf = '';
+    // ── error ──
+    socket.on('error', () => { socket.destroy(); });
 
-        // TCP rate limit
-        if (tcpRlBlocked(ip)) {
-            socket.write(tcpEncrypt('DENY')); socket.end(); return;
-        }
-
-        const plain = tcpDecrypt(raw);
-        if (!plain) {
-            log('WARNING', `TCP DECRYPT FAIL  ${ip}`);
-            tcpRlFail(ip); socket.end(); return;
-        }
-
-        if (isIpBanned(ip, loadBans())) {
-            socket.write(tcpEncrypt('DENY'));
-            log('WARNING', `TCP BANNED  ${ip}`); socket.end(); return;
-        }
-
-        // Maintenance mode
-        if (isMaintenanceActive()) {
-            socket.write(tcpEncrypt('MAINTENANCE')); socket.end(); return;
-        }
-
-        const parts = plain.trim().split(' ');
-        const cmd   = parts[0]?.toUpperCase();
-
-        // ── AUTH ──────────────────────────────────────────────────────────────
-        if (cmd === 'AUTH' && parts[1]) {
-            const mid     = parts[1];
-            const sentKey = parts[2] || null;
-            if (!isValidMachineId(mid)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (invalid machine id)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            const db      = loadDB();
-            let entry     = db[mid];
-            let justRegistered = false;
-
-            if (!entry) {
-                if (!autoRegisterEnabled()) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (not registered)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-                const newKey = generateLicenseKey();
-                entry = {
-                    max_players: 10, tier: 'basic',
-                    note: 'Auto-registered', added: now(), revoked: false, auto: true,
-                    peak_players: 0, license_key: newKey, zombie: false,
-                };
-                db[mid] = entry; saveDB(db);
-                justRegistered = true;
-                log('INFO', `AUTH AUTO   ${ip}  [${mid}]  tier=basic max=10  key=${newKey}`);
-                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: 10 players · Không giới hạn ngày\nKey: ${newKey}`);
-            }
-
-            if (entry.revoked) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (revoked)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            if (isExpired(entry)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (expired)`);
-                dispatchWebhook('license.expired', { mid, ip }); tcpRlFail(ip); socket.end(); return;
-            }
-
-            if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (missing key in strict mode)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-
-            // License key verification — bỏ qua nếu vừa auto-register (client chưa biết key)
-            // Chấp nhận previous_keys trong grace window để client có thời gian đồng bộ key mới
-            let shouldBootstrapKey = false;
-            if (entry.license_key && !justRegistered) {
-                const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
-                const validKey = sentKey && (sentKey === entry.license_key
-                    || prev.some(p => p && p.key === sentKey
-                                       && (!p.expires_at || p.expires_at > Date.now())));
-                shouldBootstrapKey = canBootstrapLicenseKey(entry, {
-                    sentKey,
-                    justRegistered,
-                    enabled: licenseKeyBootstrapEnabled(),
-                });
-                if (!validKey && !shouldBootstrapKey) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-                if (shouldBootstrapKey) {
-                    log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
-                }
-                // Key cũ vẫn hợp lệ → gửi key mới xuống client lần này (qua AUTH OK payload bên dưới)
-                if (!shouldBootstrapKey && sentKey !== entry.license_key) {
-                    log('INFO', `AUTH OLD-KEY ${ip}  [${mid}]  → sẽ đồng bộ key mới`);
-                }
-            }
-
-            // IP whitelist per machine
-            if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
-                const allowed = entry.allowed_ips.some(a =>
-                    a === ip || (a.endsWith('.*') && ip.startsWith(a.slice(0, -1)))
-                );
-                if (!allowed) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (IP not whitelisted)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-            }
-
-            // Multi-IP detection
-            if (active[mid] && active[mid].ip !== ip) {
-                log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
-                sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
-                dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
-            }
-
-            const maxPl   = getMaxPlayers(entry);
-            const token   = makeToken(mid, maxPl);
-            // Cấp/lấy agent token để client tự cài agent điều khiển từ xa
-            const agentTok = agent.getOrCreateToken(mid);
-            // Format response:
-            //   OK <max> <hmac>                          → auth thường, không agent
-            //   OK <max> <hmac> <agent_token>            → auth thường + agent
-            //   OK <max> <hmac> <new_key>                → auto-register / bootstrap / sync key mới
-            //   OK <max> <hmac> <new_key> <agent_token>  → bootstrap / sync key + agent
-            // Client phân giải bằng heuristic: license_key = 32 hex, agent token = 48 hex.
-            const needSyncKey = justRegistered
-                || shouldBootstrapKey
-                || (entry.license_key && sentKey && sentKey !== entry.license_key);
-            let okPayload = `OK ${maxPl} ${token}`;
-            if (needSyncKey && entry.license_key) okPayload += ` ${entry.license_key}`;
-            if (agentTok) okPayload += ` ${agentTok}`;
-            socket.write(tcpEncrypt(okPayload));
-
-            const wasOnline = !!active[mid];
-            active[mid] = {
-                ip, players: active[mid]?.players || 0,
-                last_seen: now(), uptime_start: active[mid]?.uptime_start || now(),
-            };
-            if (!wasOnline) {
-                pushHistory({ mid, event: 'online', ip });
-                sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
-                dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
-                wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: 0 });
-            }
-
-            // Clear zombie flag
-            if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
-            tcpRlSuccess(ip);
-            log('INFO', `AUTH OK     ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
-
-            // GeoIP async (non-blocking)
-            getGeoIP(ip).then(geo => {
-                if (geo && active[mid]) {
-                    active[mid].geo = geo;
-                    wsBroadcast('machine.geo', { mid, geo });
-                }
-            });
-
-        // ── HB ────────────────────────────────────────────────────────────────
-        } else if (cmd === 'HB' && parts[1] && parts[2] !== undefined) {
-            const mid = parts[1];
-            const cnt = parseInt(parts[2]) || 0;
-            if (!isValidMachineId(mid)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `HB DENY     ${ip}  [${mid}]  (invalid machine id)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            const db  = loadDB();
-            const entry = db[mid];
-
-            if (!entry || entry.revoked) {
-                socket.write(tcpEncrypt('REVOKE'));
-                if (active[mid]) { pushHistory({ mid, event: 'offline', ip, reason: 'revoked' }); dispatchWebhook('license.revoked', { mid, ip }); }
-                delete active[mid]; wsBroadcast('machine.offline', { mid });
-                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (revoked)`); socket.end(); return;
-            }
-            if (isExpired(entry)) {
-                socket.write(tcpEncrypt('REVOKE'));
-                if (active[mid]) { pushHistory({ mid, event: 'offline', ip, reason: 'expired' }); dispatchWebhook('license.expired', { mid, ip }); }
-                delete active[mid]; wsBroadcast('machine.offline', { mid });
-                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`); socket.end(); return;
-            }
-
-            const maxPl = getMaxPlayers(entry);
-            // KHÔNG revoke khi vượt quota — vì client gs sẽ _exit(1) làm sập
-            // toàn bộ game server, mọi người bị kick về login. Chỉ alert.
-            // Hard-limit thực sự đã được áp dụng phía gs (userlogin.cpp) tự
-            // chặn login mới khi online > max_pl.
-            if (cnt > maxPl) {
-                if (!entry._alertOver) {
-                    entry._alertOver = true;
-                    sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tự chặn login mới —`);
-                    dispatchWebhook('players.over', { mid, ip, players: cnt, max_players: maxPl });
-                }
-                log('WARNING', `HB OVER     ${ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit, không revoke)`);
-            } else if (cnt < Math.floor(maxPl * 0.9)) {
-                entry._alertOver = false;
-            }
-
-            // Peak players update
-            if (cnt > (entry.peak_players || 0)) { entry.peak_players = cnt; }
-
-            // 80% player alert
-            if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
-                entry._alert80 = true;
-                sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
-                dispatchWebhook('players.high', { mid, ip, players: cnt, max_players: maxPl });
-            } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7)) {
-                entry._alert80 = false;
-            }
-
-            entry.last_hb_ts = Date.now();
-            db[mid] = entry; saveDB(db);
-
-            pushStat(mid, cnt);
-
-            if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
-                log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
-            }
-
-            // ── CFGMAX + KEY real-time push ─────────────────────────────────────
-            // Nếu admin đã thay đổi max_players hoặc license key trên web UI,
-            // gửi kèm CFGMAX:<n> và/hoặc KEY:<hex> trong HB response.
-            // Client (license_check.h F9) parse các field này và áp dụng ngay
-            // mà không cần restart. Sau khi gửi, clear pending flag.
-            let hbExtra = '';
-            const pendingMax = _pendingMaxPlayers.get(mid);
-            const pendingKey = _pendingKey.get(mid);
-
-            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
-                hbExtra += ` CFGMAX:${pendingMax}`;
-                _pendingMaxPlayers.delete(mid);
-                log('INFO', `HB CFGMAX   [${mid}]  max_players → ${pendingMax} (real-time push)`);
-            }
-            if (pendingKey !== undefined && pendingKey.length === 32) {
-                hbExtra += ` KEY:${pendingKey}`;
-                _pendingKey.delete(mid);
-                log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
-            }
-
-            socket.write(tcpEncrypt(`OK ${maxPl}${hbExtra}`));
-            active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
-            wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl, pendingMax: !!pendingMax, pendingKey: !!pendingKey });
-            log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
-        }
-        socket.end();
-    });
-
-    socket.on('error', () => {});
-    socket.on('timeout', () => socket.destroy());
+    // ── timeout ──
+    socket.on('timeout', () => { socket.destroy(); });
 });
-tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM`));
 
-// ── Express + HTTP server ─────────────────────────────────────────────────────
-const app        = express();
-const httpServer = http.createServer(app);
-app.disable('x-powered-by');
-
-// ── WebSocket Realtime Server ───────────────────────────────────────────────
-// Persistent connection thay thế TCP polling. Client kết nối 1 lần, server
-// có thể PUSH CFGMAX/KEY/REVOKE ngay lập tức không cần chờ HB poll.
-const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-
-wss.on('connection', (ws, req) => {
-    const ip = (req.socket.remoteAddress || '').replace('::ffff:', '') || '?';
-
-    // Rate limit per IP
-    let wsIpCount = 0;
-    for (const [, c] of wsClients) { if (c.ip === ip) wsIpCount++; }
-    if (wsIpCount >= TCP_MAX_CONCURRENT_PER_IP) {
-        ws.close(1013, 'Too many connections');
+// ── processTcpFrame ────────────────────────────────────────────────────────────
+function processTcpFrame(socket, state, frame) {
+    // ── Decrypt ──
+    const plain = tcpDecrypt(frame);
+    if (!plain) {
+        log('WARNING', `TCP DECRYPT FAIL ${state.ip} [${state.mid || '?'}]`);
+        socket.write(tcpEncrypt('DENY'));
+        socket.end();
         return;
     }
 
-    let authenticated = false;
-    let mid = null;
+    const parts = plain.trim().split(' ');
+    const cmd   = (parts[0] || '').toUpperCase();
 
-    // Timeout: phải AUTH trong 15s nếu không tự disconnect
-    const authTimer = setTimeout(() => {
-        if (!authenticated) {
-            log('WARNING', `WS AUTH TIMEOUT ${ip}`);
-            ws.close(4001, 'Auth timeout');
-        }
-    }, 15000);
-
-    ws.on('message', (data, isBinary) => {
-        if (!isBinary) {
-            ws.close(1003, 'Binary frames only');
-            return;
-        }
-
-        // Giải mã AES-256-GCM (dùng chung hàm với TCP)
-        const plain = tcpDecrypt(data.toString());
-        if (!plain) {
-            log('WARNING', `WS DECRYPT FAIL ${ip} [${mid || '?'}]`);
-            ws.close(4002, 'Decrypt failed');
-            return;
-        }
-
-        const parts = plain.trim().split(' ');
-        const cmd   = parts[0]?.toUpperCase();
-
-        // ── AUTH ──────────────────────────────────────────────────────
-        if (cmd === 'AUTH' && parts[1] && !authenticated) {
-            const _mid     = parts[1];
-            const sentKey  = parts[2] || null;
-            const sendMsg  = (msg) => {
-                try { ws.send(tcpEncrypt(msg)); } catch {}
-            };
-
-            if (!isValidMachineId(_mid)) {
-                sendMsg('DENY');
-                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (invalid id)`);
-                ws.close(4003, 'Invalid machine id'); return;
-            }
-
-            // Kiểm tra IP ban
-            if (isIpBanned(ip, loadBans())) {
-                sendMsg('DENY');
-                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (banned)`);
-                ws.close(4003, 'Banned'); return;
-            }
-
-            if (isMaintenanceActive()) {
-                sendMsg('MAINTENANCE'); ws.close(); return;
-            }
-
-            // Dùng chung logic AUTH với TCP
-            const db = loadDB();
-            let entry = db[_mid];
-            let justRegistered = false;
-
-            if (!entry) {
-                if (!autoRegisterEnabled()) {
-                    sendMsg('DENY');
-                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (not registered)`);
-                    ws.close(4003, 'Not registered'); return;
-                }
-                // Auto-register
-                const newKey = crypto.randomBytes(16).toString('hex');
-                entry = {
-                    tier: 'basic', max_players: 10, expires_at: null,
-                    license_key: newKey, added: now(), note: '',
-                };
-                db[_mid] = entry; saveDB(db);
-                justRegistered = true;
-                log('INFO', `WS AUTH AUTO  ${ip}  [${_mid}]  tier=basic max=10`);
-            }
-
-            if (entry.revoked) {
-                sendMsg('DENY');
-                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (revoked)`);
-                ws.close(4003, 'Revoked'); return;
-            }
-            if (isExpired(entry)) {
-                sendMsg('DENY');
-                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (expired)`);
-                ws.close(4003, 'Expired'); return;
-            }
-
-            // License key check
-            if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
-                sendMsg('DENY');
-                log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (missing key)`);
-                ws.close(4003, 'Missing key'); return;
-            }
-
-            // [FIX B12] WS AUTH: mirror TCP path — kiểm tra previous_keys grace window.
-            // TCP path chấp nhận key cũ trong 24h (previous_keys[]) sau khi rotate.
-            // WS path cũ chỉ so sánh sentKey === entry.license_key → DENY ngay sau rotate.
-            // Fix: dùng cùng logic với TCP (previous_keys + bootstrap).
-            if (entry.license_key && !justRegistered) {
-                const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
-                const validKey = sentKey && (
-                    sentKey === entry.license_key ||
-                    prev.some(p => p && p.key === sentKey && (!p.expires_at || p.expires_at > Date.now()))
-                );
-                const shouldBootstrapKey = canBootstrapLicenseKey(entry, {
-                    sentKey,
-                    justRegistered,
-                    enabled: licenseKeyBootstrapEnabled(),
-                });
-                if (!validKey && !shouldBootstrapKey) {
-                    sendMsg('DENY');
-                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (wrong key)`);
-                    ws.close(4003, 'Wrong key'); return;
-                }
-                if (shouldBootstrapKey) {
-                    log('INFO', `WS AUTH BOOTSTRAP-KEY ${ip}  [${_mid}]  -> will sync key`);
-                }
-            }
-
-            // IP whitelist
-            if (entry.allowed_ips?.length > 0) {
-                const allowed = entry.allowed_ips.some(cidr => ipInCIDR(ip, cidr));
-                if (!allowed) {
-                    sendMsg('DENY');
-                    log('WARNING', `WS AUTH DENY  ${ip}  [${_mid}]  (IP not whitelisted)`);
-                    ws.close(4003, 'IP not whitelisted'); return;
-                }
-            }
-
-            // AUTH OK
-            const maxPl   = getMaxPlayers(entry);
-            const token   = makeToken(_mid, maxPl);
-            const agentTok = agent.getOrCreateToken(_mid);
-            const needSyncKey = justRegistered
-                || (entry.license_key && sentKey && sentKey !== entry.license_key);
-            let okPayload = `OK ${maxPl} ${token}`;
-            if (needSyncKey && entry.license_key) okPayload += ` ${entry.license_key}`;
-            if (agentTok) okPayload += ` ${agentTok}`;
-
-            sendMsg(okPayload);
-            authenticated = true;
-            mid = _mid;
-            clearTimeout(authTimer);
-
-            // Push pending config nếu có
-            let pushed = '';
-            const pendingMax = _pendingMaxPlayers.get(mid);
-            const pendingKey = _pendingKey.get(mid);
-            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
-                sendMsg(`CFGMAX:${pendingMax}`);
-                _pendingMaxPlayers.delete(mid);
-                pushed += ` CFGMAX:${pendingMax}`;
-            }
-            if (pendingKey !== undefined && pendingKey.length === 32) {
-                sendMsg(`KEY:${pendingKey}`);
-                _pendingKey.delete(mid);
-                pushed += ` KEY:${pendingKey}`;
-            }
-
-            const wasOnline = !!active[mid];
-            active[mid] = { ip, players: 0, last_seen: now(), uptime_start: now() };
-            if (!wasOnline) {
-                pushHistory({ mid, event: 'online', ip, via: 'ws' });
-                sendTelegram(`🟢 <b>Server Online</b> (WS)\n<code>${mid}</code>\nIP: ${ip}`);
-                dispatchWebhook('machine.online', { mid, ip });
-            }
-
-            // Track WS client để push realtime
-            wsClients.set(mid, { ws, ip, players: 0, authenticated: true });
-            if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
-            log('INFO', `WS AUTH OK   ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}${pushed}`);
-
-            // Agent install
-            if (agentTok) agent.ensureInstalled(mid, agentTok);
-
-            return;
-        }
-
-        // ── HB (chỉ sau AUTH) ─────────────────────────────────────────
-        if (cmd === 'HB' && authenticated && mid) {
-            const cnt = parseInt(parts[2], 10) || 0;
-            const sendMsg = (msg) => {
-                try { ws.send(tcpEncrypt(msg)); } catch {}
-            };
-
-            const db = loadDB();
-            const entry = db[mid];
-
-            if (!entry || entry.revoked) {
-                sendMsg('REVOKE');
-                if (active[mid]) {
-                    pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
-                    dispatchWebhook('license.revoked', { mid, ip });
-                }
-                delete active[mid]; wsClients.delete(mid);
-                log('WARNING', `WS HB REVOKE ${ip}  [${mid}]  (revoked)`);
-                ws.close(4004, 'Revoked'); return;
-            }
-            if (isExpired(entry)) {
-                sendMsg('REVOKE');
-                if (active[mid]) {
-                    pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
-                    dispatchWebhook('license.expired', { mid, ip });
-                }
-                delete active[mid]; wsClients.delete(mid);
-                log('WARNING', `WS HB REVOKE ${ip}  [${mid}]  (expired)`);
-                ws.close(4004, 'Expired'); return;
-            }
-
-            const maxPl = getMaxPlayers(entry);
-            if (cnt > maxPl) {
-                if (!entry._alertOver) {
-                    entry._alertOver = true;
-                    sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
-                }
-                log('WARNING', `WS HB OVER   ${ip}  [${mid}]  players=${cnt}>${maxPl}`);
-            } else if (cnt < Math.floor(maxPl * 0.9)) {
-                entry._alertOver = false;
-            }
-
-            if (cnt > (entry.peak_players || 0)) entry.peak_players = cnt;
-            if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
-                entry._alert80 = true;
-                sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
-            } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7)) {
-                entry._alert80 = false;
-            }
-
-            entry.last_hb_ts = Date.now();
-            db[mid] = entry; saveDB(db);
-            pushStat(mid, cnt);
-
-            // CFGMAX + KEY push
-            let hbExtra = '';
-            const pendingMax = _pendingMaxPlayers.get(mid);
-            const pendingKey = _pendingKey.get(mid);
-            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
-                hbExtra += ` CFGMAX:${pendingMax}`;
-                _pendingMaxPlayers.delete(mid);
-                log('INFO', `WS HB CFGMAX [${mid}]  max_players → ${pendingMax} (push)`);
-            }
-            if (pendingKey !== undefined && pendingKey.length === 32) {
-                hbExtra += ` KEY:${pendingKey}`;
-                _pendingKey.delete(mid);
-                log('INFO', `WS HB KEY-SYNC [${mid}]  license_key updated (push)`);
-            }
-
-            sendMsg(`OK ${maxPl}${hbExtra}`);
-            active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
-            if (wsClients.has(mid)) {
-                wsClients.get(mid).players = cnt;
-                wsClients.get(mid).last_seen = Date.now();
-            }
-
-            log('INFO', `WS HB OK     ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
-            return;
-        }
-
-        // Unknown command or unauthenticated
-        log('WARNING', `WS UNKNOWN   ${ip}  cmd=${cmd}  auth=${authenticated}`);
-    });
-
-    ws.on('close', (code) => {
-        if (mid) {
-            wsClients.delete(mid);
-            // Không xóa active[mid] ngay — giữ cho đến khi timeout
-            // để web UI vẫn thấy "online" nếu client reconnect nhanh
-            log('INFO', `WS CLOSE     [${mid}]  code=${code}  ip=${ip}`);
-        }
-        clearTimeout(authTimer);
-    });
-
-    ws.on('error', () => {});
-    ws.on('pong', () => {
-        if (mid && wsClients.has(mid)) {
-            wsClients.get(mid).last_seen = Date.now();
-        }
-    });
-});
-
-// WebSocket ping/pong keepalive mỗi 30s
-setInterval(() => {
-    for (const [mid, client] of wsClients) {
-        if (client.ws.readyState === 1) {
-            client.ws.ping();
-        } else {
-            wsClients.delete(mid);
-        }
+    // ── IP Ban check ──
+    if (isIpBanned(state.ip, loadBans())) {
+        socket.write(tcpEncrypt('DENY'));
+        log('WARNING', `TCP BANNED  ${state.ip}`);
+        socket.end();
+        return;
     }
-}, 30000);
 
-log('INFO', `WebSocket realtime server ready (path=/ws)`);
+    // ── Maintenance check ──
+    if (isMaintenanceActive()) {
+        socket.write(tcpEncrypt('MAINTENANCE'));
+        socket.end();
+        return;
+    }
+
+    // ── TCP rate limit ──
+    if (tcpRlBlocked(state.ip)) {
+        socket.write(tcpEncrypt('DENY'));
+        socket.end();
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── AUTH ── (chi khi chua authenticated)
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (cmd === 'AUTH' && !state.authenticated && parts[1]) {
+        const mid     = parts[1];
+        const sentKey = parts[2] || null;
+
+        if (!isValidMachineId(mid)) {
+            socket.write(tcpEncrypt('DENY'));
+            log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (invalid id)`);
+            socket.end();
+            return;
+        }
+
+        const db      = loadDB();
+        let entry     = db[mid];
+        let justRegistered = false;
+
+        if (!entry) {
+            if (!autoRegisterEnabled()) {
+                socket.write(tcpEncrypt('DENY'));
+                log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (not registered)`);
+                socket.end();
+                return;
+            }
+            const newKey = generateLicenseKey();
+            entry = {
+                max_players: 10, tier: 'basic',
+                note: 'Auto-registered', added: now(), revoked: false, auto: true,
+                peak_players: 0, license_key: newKey, zombie: false,
+            };
+            db[mid] = entry; saveDB(db);
+            justRegistered = true;
+            log('INFO', `TCP AUTH AUTO  ${state.ip}  [${mid}]  tier=basic max=10  key=${newKey}`);
+            sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${state.ip}\nTier: Basic · Max: 10 players · Khong gioi han ngay\nKey: ${newKey}`);
+        }
+
+        if (entry.revoked) {
+            socket.write(tcpEncrypt('DENY'));
+            log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (revoked)`);
+            socket.end();
+            return;
+        }
+        if (isExpired(entry)) {
+            socket.write(tcpEncrypt('DENY'));
+            log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (expired)`);
+            dispatchWebhook('license.expired', { mid, ip: state.ip });
+            socket.end();
+            return;
+        }
+
+        if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
+            socket.write(tcpEncrypt('DENY'));
+            log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (missing key in strict mode)`);
+            socket.end();
+            return;
+        }
+
+        let shouldBootstrapKey = false;
+        if (entry.license_key && !justRegistered) {
+            const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
+            const validKey = sentKey && (sentKey === entry.license_key
+                || prev.some(p => p && p.key === sentKey
+                                   && (!p.expires_at || p.expires_at > Date.now())));
+            shouldBootstrapKey = canBootstrapLicenseKey(entry, {
+                sentKey, justRegistered,
+                enabled: licenseKeyBootstrapEnabled(),
+            });
+            if (!validKey && !shouldBootstrapKey) {
+                socket.write(tcpEncrypt('DENY'));
+                log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (wrong key)`);
+                socket.end();
+                return;
+            }
+            if (shouldBootstrapKey) {
+                log('INFO', `TCP AUTH BOOTSTRAP-KEY ${state.ip}  [${mid}]  -> sync license.key`);
+            }
+            if (!shouldBootstrapKey && sentKey !== entry.license_key) {
+                log('INFO', `TCP AUTH OLD-KEY ${state.ip}  [${mid}]  -> se dong bo key moi`);
+            }
+        }
+
+        // IP whitelist per machine
+        if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
+            const allowed = entry.allowed_ips.some(a =>
+                a === state.ip || (a.endsWith('.*') && state.ip.startsWith(a.slice(0, -1)))
+            );
+            if (!allowed) {
+                socket.write(tcpEncrypt('DENY'));
+                log('WARNING', `TCP AUTH DENY  ${state.ip}  [${mid}]  (IP not whitelisted)`);
+                socket.end();
+                return;
+            }
+        }
+
+        // Multi-IP detection
+        if (active[mid] && active[mid].ip !== state.ip) {
+            log('WARNING', `TCP AUTH MULTI-IP [${mid}]  prev=${active[mid].ip}  new=${state.ip}`);
+            sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${state.ip}\n— Possible license sharing —`);
+            dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: state.ip });
+        }
+
+        const maxPl     = getMaxPlayers(entry);
+        const token     = makeToken(mid, maxPl);
+        const agentTok  = agent.getOrCreateToken(mid);
+        const needSyncKey = justRegistered
+            || shouldBootstrapKey
+            || (entry.license_key && sentKey && sentKey !== entry.license_key);
+
+        // ── Key-value response format ──
+        let resp = `OK MAX:${maxPl} TOKEN:${token}`;
+        if (needSyncKey && entry.license_key) resp += ` KEY:${entry.license_key}`;
+        if (agentTok)                        resp += ` AGENT:${agentTok}`;
+
+        // ── Write + chi set state khi write thanh cong ──
+        try {
+            socket.write(tcpEncrypt(resp));
+            state.mid = mid;
+            state.authenticated = true;
+            state.lastHb = Date.now();
+        } catch (e) {
+            log('WARNING', `TCP AUTH WRITE FAIL ${state.ip} [${mid}]: ${e.message}`);
+            socket.destroy();
+            return;
+        }
+
+        const wasOnline = !!active[mid];
+        active[mid] = {
+            ip: state.ip, players: active[mid]?.players || 0,
+            last_seen: now(), uptime_start: active[mid]?.uptime_start || now(),
+        };
+        if (!wasOnline) {
+            pushHistory({ mid, event: 'online', ip: state.ip });
+            sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${state.ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
+            dispatchWebhook('machine.online', { mid, ip: state.ip, tier: entry.tier, max_players: maxPl });
+        }
+
+        if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
+        tcpRlSuccess(state.ip);
+        log('INFO', `TCP AUTH OK   ${state.ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
+
+        // GeoIP async
+        getGeoIP(state.ip).then(geo => {
+            if (geo && active[mid]) active[mid].geo = geo;
+        });
+
+        // Agent install
+        if (agentTok) agent.ensureInstalled(mid, agentTok);
+
+        // KHONG socket.end() — giu persistent connection cho HB
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── HB ── (chi sau AUTH + mid khop)
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (cmd === 'HB' && state.authenticated && parts[1] && parts[2] !== undefined) {
+        const mid = parts[1];
+        const cnt = parseInt(parts[2], 10);
+
+        // ── Validate mid khop socket state ──
+        if (mid !== state.mid) {
+            log('WARNING', `TCP HB MID-MISMATCH ${state.ip}  claimed=${mid}  actual=${state.mid}`);
+            socket.write(tcpEncrypt('DENY'));
+            socket.end();
+            return;
+        }
+
+        // ── Validate player_count ──
+        if (!Number.isFinite(cnt) || cnt < 0 || cnt > 100000) {
+            log('WARNING', `TCP HB INVALID-COUNT ${state.ip} [${mid}]  cnt=${parts[2]}`);
+            socket.write(tcpEncrypt('DENY'));
+            socket.end();
+            return;
+        }
+
+        const db  = loadDB();
+        const entry = db[mid];
+
+        if (!entry || entry.revoked) {
+            socket.write(tcpEncrypt('REVOKE'));
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip: state.ip, reason: 'revoked' });
+                dispatchWebhook('license.revoked', { mid, ip: state.ip });
+            }
+            delete active[mid];
+            log('WARNING', `TCP HB REVOKE ${state.ip}  [${mid}]  (revoked)`);
+            socket.end();
+            return;
+        }
+        if (isExpired(entry)) {
+            socket.write(tcpEncrypt('REVOKE'));
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip: state.ip, reason: 'expired' });
+                dispatchWebhook('license.expired', { mid, ip: state.ip });
+            }
+            delete active[mid];
+            log('WARNING', `TCP HB REVOKE ${state.ip}  [${mid}]  (expired)`);
+            socket.end();
+            return;
+        }
+
+        const maxPl = getMaxPlayers(entry);
+
+        // Player over limit alert (soft-limit — khong revoke)
+        if (cnt > maxPl) {
+            if (!entry._alertOver) {
+                entry._alertOver = true;
+                sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tu chan login moi —`);
+                dispatchWebhook('players.over', { mid, ip: state.ip, players: cnt, max_players: maxPl });
+            }
+            log('WARNING', `TCP HB OVER   ${state.ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit)`);
+        } else if (cnt < Math.floor(maxPl * 0.9)) {
+            entry._alertOver = false;
+        }
+
+        // Peak players update
+        if (cnt > (entry.peak_players || 0)) entry.peak_players = cnt;
+
+        // 80% player alert
+        if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
+            entry._alert80 = true;
+            sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
+            dispatchWebhook('players.high', { mid, ip: state.ip, players: cnt, max_players: maxPl });
+        } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7)) {
+            entry._alert80 = false;
+        }
+
+        entry.last_hb_ts = Date.now();
+        db[mid] = entry; saveDB(db);
+        pushStat(mid, cnt);
+
+        if (active[mid] && active[mid].ip && active[mid].ip !== state.ip) {
+            log('WARNING', `TCP HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${state.ip}`);
+        }
+
+        // ── Build response voi pending config ──
+        let resp = `OK MAX:${maxPl}`;
+        const pendingMax = _pendingMaxPlayers.get(mid);
+        const pendingKey = _pendingKey.get(mid);
+
+        if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
+            resp += ` CFGMAX:${pendingMax}`;
+        }
+        if (pendingKey !== undefined && pendingKey.length === 32) {
+            resp += ` KEY:${pendingKey}`;
+        }
+
+        // ── Write + chi clear pending khi write thanh cong ──
+        try {
+            socket.write(tcpEncrypt(resp));
+            // Chi clear sau khi write thanh cong
+            if (pendingMax !== undefined) {
+                _pendingMaxPlayers.delete(mid);
+                log('INFO', `TCP HB CFGMAX [${mid}] ${maxPl} → ${pendingMax} (pushed)`);
+            }
+            if (pendingKey !== undefined) {
+                _pendingKey.delete(mid);
+                log('INFO', `TCP HB KEY-SYNC [${mid}] (pushed)`);
+            }
+        } catch (e) {
+            log('WARNING', `TCP HB WRITE FAIL ${state.ip} [${mid}]: ${e.message}`);
+            socket.destroy();
+            return;
+        }
+
+        state.lastHb = Date.now();
+        active[mid] = { ...active[mid], ip: state.ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
+        log('INFO', `TCP HB OK     ${state.ip}  [${mid}]  players=${cnt}/${maxPl}${pendingMax ? ' +CFGMAX' : ''}${pendingKey ? ' +KEY' : ''}`);
+        // KHONG socket.end() — giu persistent connection
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Unknown / invalid command ──
+    // ═══════════════════════════════════════════════════════════════════════════
+    log('WARNING', `TCP UNKNOWN  ${state.ip}  cmd=${cmd}  auth=${state.authenticated}  mid=${state.mid || '?'}`);
+    socket.write(tcpEncrypt('DENY'));
+    socket.end();
+}
+
+tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM (persistent, state-per-socket)`));
+
+const app        = express();
+const httpServer = http.createServer(app);
+app.disable('x-powered-by');
 app.use((req, res, next) => {
     for (const [k, v] of Object.entries(securityHeaders())) res.setHeader(k, v);
     next();
 });
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true }));
@@ -1314,13 +960,10 @@ app.use((req, res, next) => {
     }
     next();
 });
-
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
-
 function suggestedDataDir() {
     return path.resolve(__dirname, '..', 'runtime', 'license-server-data');
 }
-
 function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
     const user = String(username || '').trim();
     const pass = String(password || '');
@@ -1330,39 +973,32 @@ function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
     if (pass.length < 10) return { ok: false, error: 'Mật khẩu cần ít nhất 10 ký tự.' };
     if (pass !== confirm) return { ok: false, error: 'Xác nhận mật khẩu không khớp.' };
     if (!dirInput) return { ok: false, error: 'Vui lòng chọn thư mục lưu data.' };
-
     let targetInfo;
     try {
         targetInfo = resolveDataDirInfo({ appDir: __dirname, env: { LICENSE_DATA_DIR: dirInput } });
     } catch (e) {
         return { ok: false, error: e.message };
     }
-
     rememberDataDir(__dirname, targetInfo.dir);
     const nextCreds = { user, pass_hash: hashPassword(pass) };
     fs.writeFileSync(path.join(targetInfo.dir, 'admin.json'), JSON.stringify(nextCreds, null, 2), { mode: 0o600 });
-
     if (path.resolve(targetInfo.dir) === path.resolve(DATA_DIR)) {
         adminCreds = nextCreds;
         WEB_USER = user;
         setupRequired = false;
     }
-
     return {
         ok: true,
         restartRequired: path.resolve(targetInfo.dir) !== path.resolve(DATA_DIR),
         dataDir: targetInfo.dir,
     };
 }
-
 function auth(req, res, next) {
     if (setupRequired) return res.redirect('/setup');
     if (req.session.pendingTwoFactor) return res.redirect('/verify-2fa');
     if (req.session.loggedIn) return next();
     res.redirect('/login');
 }
-
-// ── Login / Logout ────────────────────────────────────────────────────────────
 app.get('/setup', (req, res) => {
     if (!setupRequired) return res.redirect('/login');
     res.render('setup', { error: null, suggestedDataDir: suggestedDataDir(), result: null });
@@ -1390,7 +1026,6 @@ app.post('/setup', (req, res) => {
     });
     res.render('setup', { error: null, suggestedDataDir: result.dataDir, result });
 });
-
 app.get('/login', (req, res) => {
     if (setupRequired) return res.redirect('/setup');
     res.render('login', { error: null });
@@ -1419,13 +1054,10 @@ app.post('/login', (req, res) => {
             res.redirect('/');
         });
     }
-    // ── Fail2ban + progressive delay ───────────────────────────────────────
     rl_fail(ip);
     const e = loginAttempts[ip];
     const left = e ? Math.max(0, MAX_ATTEMPTS - (e.count || 0)) : MAX_ATTEMPTS;
     log('WARNING', `LOGIN FAIL  ip=${ip}  (${left} left)`);
-
-    // Kiểm tra nếu IP này vừa bị lock → fail2ban auto-ban
     if (left === 0) {
         const shouldAutoBan = recordLockEvent(ip);
         if (shouldAutoBan) {
@@ -1442,8 +1074,6 @@ app.post('/login', (req, res) => {
             return res.render('login', { error: 'IP đã bị khóa tự động trong 24h do quá nhiều lần thử sai.' });
         }
     }
-
-    // Progressive delay: làm chậm response để chống brute-force timing
     const delayMs = getProgressiveDelayMs(ip);
     setTimeout(() => {
         res.render('login', { error: `Sai tài khoản hoặc mật khẩu. Còn ${left} lần thử.` });
@@ -1451,8 +1081,6 @@ app.post('/login', (req, res) => {
 });
 app.get('/logout', auth, (req, res) => res.render('logout', { flash: null }));
 app.post('/logout', auth, (req, res) => { req.session.destroy(); res.redirect('/login'); });
-
-// ── 2FA ───────────────────────────────────────────────────────────────────────
 app.get('/verify-2fa', (req, res) => {
     if (!req.session.pendingTwoFactor) return res.redirect('/login');
     res.render('verify-2fa', { error: null });
@@ -1473,8 +1101,6 @@ app.post('/verify-2fa', (req, res) => {
     log('WARNING', 'LOGIN 2FA FAIL');
     res.render('verify-2fa', { error: 'Mã OTP không đúng.' });
 });
-
-// ── Dashboard ─────────────────────────────────────────────────────────────────
 app.get('/', auth, (req, res) => {
     const db = loadDB();
     const rows = Object.entries(active).map(([mid, info]) => {
@@ -1500,8 +1126,6 @@ app.get('/', auth, (req, res) => {
         last_updated:  new Date().toLocaleTimeString('vi-VN'),
     });
 });
-
-// ── Machines ──────────────────────────────────────────────────────────────────
 app.get('/machines', auth, (req, res) => {
     const db = loadDB();
     const rows = Object.entries(db)
@@ -1521,7 +1145,6 @@ app.get('/machines', auth, (req, res) => {
         });
     res.render('machines', { rows, TIERS, plans: loadPlans(), flash: consumeFlash(req.session) });
 });
-
 app.post('/add', auth, (req, res) => {
     const mid        = (req.body.mid || '').trim();
     const tier       = ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : 'basic';
@@ -1532,7 +1155,6 @@ app.post('/add', auth, (req, res) => {
     const gen_key    = req.body.gen_key === '1';
     const ips_raw    = (req.body.allowed_ips || '').trim();
     const allowed_ips = ips_raw ? ips_raw.split(/[\n,]/).map(s => s.trim()).filter(Boolean) : [];
-
     if (!mid) { req.session.flash = { type: 'danger', msg: 'Machine ID trống.' }; return res.redirect('/machines'); }
     if (!isValidMachineId(mid)) {
         req.session.flash = { type: 'danger', msg: 'Machine ID không hợp lệ. MAC phải có dạng 00:0c:29:2f:71:4e|hostname.' };
@@ -1549,7 +1171,6 @@ app.post('/add', auth, (req, res) => {
         allowed_ips: allowed_ips.length ? allowed_ips : undefined,
         zombie: false,
     };
-    // Luôn chuẩn hóa max_players trước khi lưu (phòng trường hợp string "0", v.v.)
     db[mid].max_players = getMaxPlayers(db[mid]);
     saveDB(db);
     const keyMsg = license_key ? ` | Key: ${license_key}` : '';
@@ -1557,7 +1178,6 @@ app.post('/add', auth, (req, res) => {
     log('INFO', `WEB ADD [${mid}] tier=${tier} max=${maxPl} key=${license_key || 'none'}`);
     res.redirect('/machines');
 });
-
 app.post('/update-limit', auth, (req, res) => {
     const mid   = (req.body.mid || '').trim();
     const maxPl = parseInt(req.body.max_players);
@@ -1569,41 +1189,25 @@ app.post('/update-limit', auth, (req, res) => {
     if (!isNaN(maxPl) && maxPl > 0) {
         db[mid].max_players = maxPl;
     } else if (db[mid]) {
-        // Chỉ dùng getMaxPlayers làm fallback nếu user không tự set max_players
         db[mid].max_players = getMaxPlayers(db[mid]);
     }
     if (tier && TIERS[tier]) db[mid].tier = tier;
     if (exp !== undefined) db[mid].expires_at = exp || undefined;
     saveDB(db);
-
-    // ── CFGMAX real-time push ─────────────────────────────────────────────
-    // Nếu max_players thay đổi và máy đang online:
-    //   - WS client → PUSH NGAY LẬP TỨC (không cần chờ HB poll)
-    //   - TCP client → đánh dấu pending, lần HB tiếp theo sẽ gửi
     const newMax = getMaxPlayers(db[mid]);
     if (newMax !== oldMax && active[mid]) {
         _pendingMaxPlayers.set(mid, newMax);
         log('INFO', `CFGMAX PENDING [${mid}] ${oldMax} → ${newMax} (will push on next HB)`);
-
-        // ── WS realtime: push ngay lập tức ──────────────────────────
-        if (wsPushToClient(mid, `CFGMAX:${newMax}`)) {
-            _pendingMaxPlayers.delete(mid);  // đã push, không cần pending
-            log('INFO', `WS CFGMAX PUSH [${mid}] ${oldMax} → ${newMax} (instant)`);
-        }
     }
-
     req.session.flash = { type: 'success', msg: `Đã cập nhật ${mid}` + (active[mid] && newMax !== oldMax ? ' — thay đổi sẽ có hiệu lực ngay lập tức.' : '') };
     res.redirect('/machines');
 });
-
-// Gia hạn license
 app.post('/renew', auth, (req, res) => {
     const mid  = (req.body.mid || '').trim();
     const days = parseInt(req.body.days) || 30;
     const db   = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
     const entry = db[mid];
-    // Tính ngày mới từ expires_at hiện tại hoặc hôm nay
     const base = entry.expires_at && new Date(entry.expires_at + 'T23:59:59') > new Date()
         ? new Date(entry.expires_at + 'T23:59:59')
         : new Date();
@@ -1615,9 +1219,6 @@ app.post('/renew', auth, (req, res) => {
     log('INFO', `WEB RENEW [${mid}] +${days}d → ${entry.expires_at}`);
     res.redirect('/machines');
 });
-
-// Tạo / đổi license key — giữ key cũ trong previous_keys[] với grace period 24h
-// để các gs đang chạy còn dùng key cũ vẫn AUTH/HB được trong khi tự đồng bộ key mới.
 const KEY_GRACE_MS = 24 * 60 * 60 * 1000;
 app.post('/gen-key', auth, (req, res) => {
     const mid = (req.body.mid || '').trim();
@@ -1628,40 +1229,24 @@ app.post('/gen-key', auth, (req, res) => {
     const newKey = generateLicenseKey();
     if (oldKey && oldKey !== newKey) {
         if (!Array.isArray(entry.previous_keys)) entry.previous_keys = [];
-        // Loại key cũ trùng + key đã hết grace
         const cutoff = Date.now();
         entry.previous_keys = entry.previous_keys
             .filter(p => p && p.key && p.key !== oldKey && p.key !== newKey
                          && (!p.expires_at || p.expires_at > cutoff));
         entry.previous_keys.push({ key: oldKey, expires_at: cutoff + KEY_GRACE_MS });
-        // Giới hạn lịch sử
         if (entry.previous_keys.length > 5) entry.previous_keys = entry.previous_keys.slice(-5);
     }
     entry.license_key = newKey;
     db[mid] = entry; saveDB(db);
-
-    // ── KEY real-time sync ────────────────────────────────────────────────
-    // Nếu máy đang online:
-    //   - WS client → PUSH NGAY LẬP TỨC
-    //   - TCP client → đánh dấu pending, lần HB tiếp theo sẽ gửi
     if (active[mid]) {
         _pendingKey.set(mid, newKey);
         log('INFO', `KEY-SYNC PENDING [${mid}] → new key will be pushed on next HB`);
-
-        // ── WS realtime: push ngay lập tức ──────────────────────────
-        if (wsPushToClient(mid, `KEY:${newKey}`)) {
-            _pendingKey.delete(mid);
-            log('INFO', `WS KEY-SYNC PUSH [${mid}] → key updated (instant)`);
-        }
     }
-
     req.session.flash = { type: 'success',
         msg: `Key mới [${mid}]: ${newKey} — key cũ còn hiệu lực 24h để client đồng bộ.` + (active[mid] ? ' Key sẽ được đẩy xuống máy ngay lập tức.' : '') };
     log('INFO', `WEB GEN-KEY [${mid}] (old key kept ${KEY_GRACE_MS/3600000}h grace)`);
     res.redirect('/machines');
 });
-
-// Xóa license key (backwards compat)
 app.post('/remove-key', auth, (req, res) => {
     const mid = (req.body.mid || '').trim();
     const db  = loadDB();
@@ -1669,7 +1254,6 @@ app.post('/remove-key', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: `Đã xóa key của ${mid}` };
     res.redirect('/machines');
 });
-
 app.post('/revoke', auth, (req, res) => {
     const mid = (req.body.mid || '').trim(), db = loadDB();
     if (db[mid]) { db[mid].revoked = true; saveDB(db); }
@@ -1683,28 +1267,17 @@ app.post('/restore', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: `Đã khôi phục: ${mid}` };
     log('INFO', `WEB RESTORE [${mid}]`); res.redirect('/machines');
 });
-
-// Xóa hẳn machine khỏi hệ thống — gỡ whitelist + agent + active + stats
-// Dùng khi khách trả máy / đổi máy hẳn / muốn cấp lại từ đầu.
 app.post('/delete-machine', auth, (req, res) => {
     const mid = (req.body.mid || '').trim();
     if (!mid) { req.session.flash = { type: 'danger', msg: 'Machine ID trống.' }; return res.redirect('/machines'); }
     const db = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: `Không tìm thấy ${mid}.` }; return res.redirect('/machines'); }
-
     delete db[mid];
     saveDB(db);
-
-    // Gỡ agent (token + state + queues)
     try { agent.uninstall(mid); } catch {}
-
-    // Gỡ khỏi active map
     if (active[mid]) {
-        wsBroadcast('machine.offline', { mid });
         delete active[mid];
     }
-
-    // Xóa time-series stats
     try {
         const stats = loadStats();
         if (stats[mid]) {
@@ -1712,7 +1285,6 @@ app.post('/delete-machine', auth, (req, res) => {
             saveJsonPrivate(STATS_FILE, stats, false);
         }
     } catch {}
-
     pushHistory({ mid, event: 'deleted', ip: '—', reason: 'admin delete' });
     dispatchWebhook('machine.deleted', { mid });
     log('INFO', `WEB DELETE  [${mid}]  (full removal)`);
@@ -1720,8 +1292,6 @@ app.post('/delete-machine', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: `Đã xóa hoàn toàn ${mid} (whitelist + agent + stats).` };
     res.redirect('/machines');
 });
-
-// Transfer license
 app.post('/transfer', auth, (req, res) => {
     const oldMid = (req.body.old_mid || '').trim();
     const newMid = (req.body.new_mid || '').trim();
@@ -1740,8 +1310,6 @@ app.post('/transfer', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: `Đã transfer ${oldMid} → ${newMid}` };
     log('INFO', `WEB TRANSFER [${oldMid}] → [${newMid}]`); res.redirect('/machines');
 });
-
-// ── Bulk actions ──────────────────────────────────────────────────────────────
 function parseMidsFromBody(body) {
     const raw = body.mids;
     if (typeof raw === 'string') {
@@ -1750,7 +1318,6 @@ function parseMidsFromBody(body) {
     if (Array.isArray(raw)) return raw.map(s => String(s).trim()).filter(Boolean);
     return [];
 }
-
 app.post('/bulk-revoke', auth, (req, res) => {
     const mids = parseMidsFromBody(req.body);
     if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
@@ -1764,7 +1331,6 @@ app.post('/bulk-revoke', auth, (req, res) => {
     log('INFO', `WEB BULK-REVOKE ${done}/${mids.length}`);
     res.redirect('/machines');
 });
-
 app.post('/bulk-renew', auth, (req, res) => {
     const mids = parseMidsFromBody(req.body);
     const days = parseInt(req.body.days) || 30;
@@ -1787,7 +1353,6 @@ app.post('/bulk-renew', auth, (req, res) => {
     log('INFO', `WEB BULK-RENEW ${done}/${mids.length} +${days}d`);
     res.redirect('/machines');
 });
-
 app.post('/bulk-delete', auth, (req, res) => {
     const mids = parseMidsFromBody(req.body);
     if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
@@ -1797,7 +1362,6 @@ app.post('/bulk-delete', auth, (req, res) => {
         if (!db[mid]) continue;
         delete db[mid];
         try { agent.uninstall(mid); } catch {}
-        if (active[mid]) { wsBroadcast('machine.offline', { mid }); delete active[mid]; }
         try {
             const stats = loadStats();
             if (stats[mid]) { delete stats[mid]; saveJsonPrivate(STATS_FILE, stats, false); }
@@ -1810,7 +1374,6 @@ app.post('/bulk-delete', auth, (req, res) => {
     log('INFO', `WEB BULK-DELETE ${done}/${mids.length}`);
     res.redirect('/machines');
 });
-
 app.post('/bulk-tier', auth, (req, res) => {
     const mids = parseMidsFromBody(req.body);
     const tier = ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : null;
@@ -1828,8 +1391,6 @@ app.post('/bulk-tier', auth, (req, res) => {
     log('INFO', `WEB BULK-TIER ${done}/${mids.length} → ${tier}`);
     res.redirect('/machines');
 });
-
-// ── Maintenance mode ──────────────────────────────────────────────────────────
 app.post('/maintenance', auth, (req, res) => {
     const s = loadSettings();
     const action  = req.body.action;
@@ -1847,8 +1408,6 @@ app.post('/maintenance', auth, (req, res) => {
     }
     res.redirect('/');
 });
-
-// ── Plans ─────────────────────────────────────────────────────────────────────
 app.get('/plans', auth, (req, res) => {
     res.render('plans', { plans: loadPlans(), TIERS, flash: consumeFlash(req.session) });
 });
@@ -1873,8 +1432,6 @@ app.post('/plans/delete', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: 'Đã xóa plan.' };
     res.redirect('/plans');
 });
-
-// ── Settings ──────────────────────────────────────────────────────────────────
 function operationsSnapshot() {
     const backups = fs.existsSync(BACKUP_DIR)
         ? fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('whitelist_') && f.endsWith('.json')).sort()
@@ -1898,16 +1455,14 @@ function operationsSnapshot() {
         },
         dataDir: DATA_DIR,
         dataDirSource: DATA_DIR_INFO.source,
-        webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
+        webUrl: `http:
         tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
         deployStatus: deployManager.status(),
     };
 }
-
 app.get('/operations', auth, (req, res) => {
     res.render('operations', { ...operationsSnapshot(), flash: consumeFlash(req.session) });
 });
-
 app.post('/operations/update', auth, async (req, res) => {
     try {
         const result = await deployManager.runUpdate();
@@ -1920,7 +1475,6 @@ app.post('/operations/update', auth, async (req, res) => {
     }
     res.redirect('/operations');
 });
-
 app.post('/operations/check-update', auth, async (req, res) => {
     try {
         const result = await deployManager.checkForUpdates();
@@ -1933,7 +1487,6 @@ app.post('/operations/check-update', auth, async (req, res) => {
     }
     res.redirect('/operations');
 });
-
 app.post('/operations/restart', auth, async (req, res) => {
     try {
         const result = await deployManager.restartPm2Only();
@@ -1946,7 +1499,6 @@ app.post('/operations/restart', auth, async (req, res) => {
     }
     res.redirect('/operations');
 });
-
 app.post('/operations/rollback', auth, async (req, res) => {
     try {
         const result = await deployManager.rollbackLast();
@@ -1959,7 +1511,6 @@ app.post('/operations/rollback', auth, async (req, res) => {
     }
     res.redirect('/operations');
 });
-
 app.get('/settings', auth, (req, res) => {
     res.render('settings', {
         settings: loadSettings(),
@@ -1992,7 +1543,6 @@ app.post('/settings/webhook', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: `Đã lưu ${s.webhooks.length} webhook URL.` };
     res.redirect('/settings');
 });
-
 app.post('/settings/agent', auth, (req, res) => {
     const s = loadSettings();
     s.advanced_shell_enabled = req.body.advanced_shell_enabled === '1';
@@ -2001,9 +1551,6 @@ app.post('/settings/agent', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: 'Đã lưu cài đặt agent command.' };
     res.redirect('/settings');
 });
-
-
-// 2FA setup
 app.get('/settings/setup-2fa', auth, async (req, res) => {
     const secret = speakeasy.generateSecret({ name: 'License Manager', length: 20 });
     req.session.totp_pending = secret.base32;
@@ -2031,14 +1578,10 @@ app.post('/settings/disable-2fa', auth, (req, res) => {
     req.session.flash = { type: 'success', msg: '2FA đã tắt.' };
     log('INFO', '2FA DISABLED'); res.redirect('/settings');
 });
-
-// ── Change admin password ────────────────────────────────────────────────────
 app.post('/settings/change-password', auth, (req, res) => {
     const currentPassword = String(req.body.current_password || '');
     const newPassword     = String(req.body.new_password || '');
     const confirmPassword = String(req.body.confirm_password || '');
-
-    // Verify current password
     if (!verifyPassword(currentPassword, adminCreds.pass_hash)) {
         return res.render('settings', {
             settings: loadSettings(),
@@ -2048,8 +1591,6 @@ app.post('/settings/change-password', auth, (req, res) => {
             flash: { type: 'danger', msg: 'Mật khẩu hiện tại không đúng.' },
         });
     }
-
-    // Validate new password strength
     const strength = isStrongPassword(newPassword);
     if (!strength.ok) {
         return res.render('settings', {
@@ -2060,7 +1601,6 @@ app.post('/settings/change-password', auth, (req, res) => {
             flash: { type: 'danger', msg: strength.error },
         });
     }
-
     if (newPassword !== confirmPassword) {
         return res.render('settings', {
             settings: loadSettings(),
@@ -2070,25 +1610,18 @@ app.post('/settings/change-password', auth, (req, res) => {
             flash: { type: 'danger', msg: 'Xác nhận mật khẩu mới không khớp.' },
         });
     }
-
-    // Save new password
     adminCreds = { user: WEB_USER, pass_hash: hashPassword(newPassword) };
     fs.writeFileSync(ADMIN_FILE, JSON.stringify(adminCreds, null, 2), { mode: 0o600 });
     updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
-
     audit(req, 'settings.change_password', {});
     log('SECURITY', `ADMIN PASSWORD CHANGED  ip=${clientIp(req)}`);
     sendTelegram(`🔐 <b>Admin password changed</b>\nIP: ${clientIp(req)}`);
-
-    // Regenerate session to prevent session fixation
     req.session.regenerate((err) => {
         req.session.loggedIn = true;
         req.session.flash = { type: 'success', msg: 'Đã đổi mật khẩu thành công. Vui lòng đăng nhập lại.' };
         res.redirect('/login');
     });
 });
-
-// ── Bulk import CSV ───────────────────────────────────────────────────────────
 app.get('/import', auth, (req, res) => res.render('import', { result: null, flash: null }));
 app.post('/import', auth, upload.single('csvfile'), (req, res) => {
     if (!verifyCsrfRequest(req)) return res.status(403).type('text/plain').send('CSRF token invalid');
@@ -2114,8 +1647,6 @@ app.post('/import', auth, upload.single('csvfile'), (req, res) => {
     log('INFO', `WEB IMPORT  added=${added} skipped=${skipped}`);
     res.render('import', { result: { added, skipped, errors }, flash: null });
 });
-
-// ── IP Bans ───────────────────────────────────────────────────────────────────
 app.get('/bans', auth, (req, res) => {
     res.render('bans', { rows: Object.entries(loadBans()), flash: consumeFlash(req.session) });
 });
@@ -2134,25 +1665,17 @@ app.post('/ban-toggle', auth, (req, res) => {
     const range = (req.body.range || '').trim(), b = loadBans();
     if (b[range]) b[range].disabled = !b[range].disabled; saveBans(b); res.redirect('/bans');
 });
-
-// ── History ───────────────────────────────────────────────────────────────────
 app.get('/history', auth, (req, res) => {
     const mid = req.query.mid || null;
     let h = loadHistory().reverse();
     if (mid) h = h.filter(e => e.mid === mid);
     res.render('history', { events: h.slice(0, 200), filter_mid: mid, flash: null });
 });
-
-// ── Logs ──────────────────────────────────────────────────────────────────────
 app.get('/logs', auth, (req, res) => {
     let lines = [];
     if (fs.existsSync(LOG_FILE)) lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-80);
     res.render('logs', { lines });
 });
-
-// ── Plans CRUD ────────────────────────────────────────────────────────────────
-
-// ── Portal (self-service khách hàng) ─────────────────────────────────────────
 app.get('/portal', (req, res) => res.render('portal', { result: null, error: null }));
 app.post('/portal', (req, res) => {
     const ip = clientIp(req);
@@ -2187,8 +1710,6 @@ app.post('/portal', (req, res) => {
     };
     res.render('portal', { result: info, error: null });
 });
-
-// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -2202,8 +1723,6 @@ app.get('/health', (req, res) => {
         maintenance: isMaintenanceActive(), ts: Date.now(),
     });
 });
-
-// ── Export CSV ────────────────────────────────────────────────────────────────
 app.get('/export/csv', auth, (req, res) => {
     const db   = loadDB();
     const head = 'machine_id,tier,max_players,peak_players,note,added,expires_at,revoked,expired,license_key\n';
@@ -2218,8 +1737,6 @@ app.get('/export/csv', auth, (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="licenses_${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(head + rows);
 });
-
-// ── API ───────────────────────────────────────────────────────────────────────
 app.get('/api/logs', auth, (req, res) => {
     let lines = [];
     if (fs.existsSync(LOG_FILE)) lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-80);
@@ -2242,11 +1759,6 @@ app.get('/api/stats', auth, (req, res) => {
         .map(([ts, v]) => [+ts, Math.round(v.sum / v.count)]);
     res.json({ total: sorted, per_machine: raw });
 });
-
-// ── SSH / Server control ──────────────────────────────────────────────────────
-// Replaced with reverse-agent (xem agent_manager.js): không cần mở port SSH,
-// agent ở máy game tự kết nối ra license server để nhận lệnh.
-
 app.get('/machine/:mid', auth, (req, res) => {
     const mid = req.params.mid;
     const db  = loadDB();
@@ -2262,20 +1774,18 @@ app.get('/machine/:mid', auth, (req, res) => {
         safeActions: commandPolicy.getSafeActions(),
         shellEnabled: settings.advanced_shell_enabled === true,
         shellTimeout: commandPolicy.clampTimeout(settings.agent_shell_timeout || 120, 120),
-        publicBase: req.protocol + '://' + req.get('host'),
+        publicBase: req.protocol + ':
         expiry: expiryInfo(entry), expired: isExpired(entry),
         flash: consumeFlash(req.session),
     });
 });
-
-// Tạo / lấy install token + script cài đặt
 app.post('/machine/:mid/agent-install', auth, (req, res) => {
     const mid = req.params.mid;
     const db  = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Machine chưa được cấp license.' }; return res.redirect('/machines'); }
     const tok = agent.getOrCreateToken(mid);
     if (req.body.server_dir) agent.setServerDir(mid, req.body.server_dir);
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '');
+    const base = (loadSettings().public_url || (req.protocol + ':
     const oneLiner = `curl -fsSL "${base}/agent/install.sh?mid=${encodeURIComponent(mid)}&token=${tok}" | sudo bash`;
     req.session.flash = {
         type: 'success',
@@ -2284,7 +1794,6 @@ app.post('/machine/:mid/agent-install', auth, (req, res) => {
     log('INFO', `AGENT INSTALL [${mid}] token issued`);
     res.redirect(`/machine/${encodeURIComponent(mid)}`);
 });
-
 app.post('/machine/:mid/agent-rotate', auth, (req, res) => {
     const mid = req.params.mid;
     agent.regenerateToken(mid);
@@ -2292,7 +1801,6 @@ app.post('/machine/:mid/agent-rotate', auth, (req, res) => {
     log('INFO', `AGENT ROTATE [${mid}]`);
     res.redirect(`/machine/${encodeURIComponent(mid)}`);
 });
-
 app.post('/machine/:mid/agent-uninstall', auth, (req, res) => {
     const mid = req.params.mid;
     agent.uninstall(mid);
@@ -2300,15 +1808,12 @@ app.post('/machine/:mid/agent-uninstall', auth, (req, res) => {
     log('INFO', `AGENT UNINSTALL [${mid}]`);
     res.redirect(`/machine/${encodeURIComponent(mid)}`);
 });
-
 app.post('/machine/:mid/agent-server-dir', auth, (req, res) => {
     const mid = req.params.mid;
     agent.setServerDir(mid, req.body.server_dir || 'pwserver');
     req.session.flash = { type: 'success', msg: `Đã cập nhật ServerDir cho ${mid}.` };
     res.redirect(`/machine/${encodeURIComponent(mid)}`);
 });
-
-// ── Agent runtime endpoints (no auth — token-protected) ─────────────────────
 function checkAgentAuth(req) {
     const auth_h = req.headers['authorization'] || '';
     const m = auth_h.match(/^Bearer\s+(.+)$/i);
@@ -2317,37 +1822,29 @@ function checkAgentAuth(req) {
     if (!mid || !agent.verifyToken(mid, m[1].trim())) return null;
     return mid;
 }
-
-// Installer one-liner: returns the install bash script
 app.get('/agent/install.sh', (req, res) => {
     const mid   = (req.query.mid   || '').toString();
     const token = (req.query.token || '').toString();
     if (!mid || !token || !agent.verifyToken(mid, token)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '');
+    const base = (loadSettings().public_url || (req.protocol + ':
     res.type('text/plain').send(
         require('./agent_manager').buildInstallScript({ serverUrl: base, mid, token })
     );
 });
-
-// Uninstaller helper
 app.get('/agent/uninstall.sh', (req, res) => {
     if (!isAgentScriptAuthorized(req.query, agent.verifyToken)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
     res.type('text/plain').send(agent.buildUninstallScript());
 });
-
-// Static runtime fetched by installer
 app.get('/agent/runtime.sh', (req, res) => {
     if (!isAgentScriptAuthorized(req.query, agent.verifyToken)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
     res.type('text/plain').send(agent.AGENT_RUNTIME);
 });
-
-// Long-poll: returns a single command (200 + X-Cmd-Id + script body) or 204
 app.get('/agent/poll', async (req, res) => {
     const mid = checkAgentAuth(req);
     if (!mid) return res.status(401).end();
@@ -2361,8 +1858,6 @@ app.get('/agent/poll', async (req, res) => {
     res.set('X-Cmd-Timeout-Seconds', String(commandPolicy.clampTimeout(cmd.payload?.timeoutSec, 300)));
     res.type('text/plain').send(cmd.payload?.script || '');
 });
-
-// Monitor blob from agent
 app.post('/agent/monitor',
     express.text({ type: '*/*', limit: '256kb' }),
     (req, res) => {
@@ -2379,8 +1874,6 @@ app.post('/agent/monitor',
         }
     }
 );
-
-// Result of executed command (multipart form: id, code, stdout, stderr)
 app.post('/agent/result',
     upload.fields([{ name: 'stdout', maxCount: 1 }, { name: 'stderr', maxCount: 1 }]),
     (req, res) => {
@@ -2395,8 +1888,6 @@ app.post('/agent/result',
         res.json({ ok: true });
     }
 );
-
-// ── Web → Agent: monitor snapshot ────────────────────────────────────────────
 app.get('/api/machine/:mid/monitor', auth, (req, res) => {
     const mid = req.params.mid;
     if (!agent.infoFor(mid)) return res.status(404).json({ error: 'no_agent' });
@@ -2404,8 +1895,6 @@ app.get('/api/machine/:mid/monitor', auth, (req, res) => {
     if (!snap) return res.status(204).end();
     res.json(snap);
 });
-
-// ── Web → Agent: control (start/stop/restart) ───────────────────────────────
 async function runControl(req, res, action) {
     const mid = req.params.mid;
     const info = agent.infoFor(mid);
@@ -2424,8 +1913,6 @@ async function runControl(req, res, action) {
     const controlTimeout = action === 'stop' ? 90 : action === 'restart' ? 240 : 180;
     const cmdId = enqueueAgentCommand(mid, action, { script, timeoutSec: controlTimeout });
     log('INFO', `SERVER ${action.toUpperCase()}  [${mid}]  cmd=${cmdId}`);
-
-    // Wait for result up to 60s, otherwise show "đang chạy nền"
     const deadline = Date.now() + 60000;
     let r = null;
     while (Date.now() < deadline) {
@@ -2447,19 +1934,16 @@ async function runControl(req, res, action) {
 app.post('/machine/:mid/start',   auth, (req, res) => runControl(req, res, 'start'));
 app.post('/machine/:mid/stop',    auth, (req, res) => runControl(req, res, 'stop'));
 app.post('/machine/:mid/restart', auth, (req, res) => runControl(req, res, 'restart'));
-
 app.post('/api/machine/:mid/safe-action', auth, async (req, res) => {
     const mid = req.params.mid;
     const info = agent.infoFor(mid);
     if (!info)         return res.status(404).json({ error: 'no_agent' });
     if (!info.online)  return res.status(503).json({ error: 'agent_offline' });
-
     const action = commandPolicy.buildSafeActionScript(req.body?.action, {
         serverDir: agent.getServerDir(mid),
         lines: req.body?.lines,
     });
     if (!action) return res.status(400).json({ error: 'unknown_action' });
-
     const id = enqueueAgentCommand(mid, 'safe_action', {
         script: action.script,
         timeoutSec: action.timeoutSec,
@@ -2470,8 +1954,6 @@ app.post('/api/machine/:mid/safe-action', auth, async (req, res) => {
     log('INFO', `SAFE ACTION [${mid}] action=${action.id} cmd=${id} timeout=${action.timeoutSec}s`);
     res.json({ id, label: action.label });
 });
-
-// ── Web → Agent: ad-hoc command (web "terminal" mỗi dòng = một lệnh) ────────
 app.post('/api/machine/:mid/exec', auth, async (req, res) => {
     const mid = req.params.mid;
     const info = agent.infoFor(mid);
@@ -2497,19 +1979,13 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
     if (!r) return res.status(204).end();
     res.json(r);
 });
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 httpServer.listen(WEB_PORT, BIND_HOST, () => {
-    log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
+    log('INFO', `Web UI: http:
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
-
-    // ── Security: migrate old audit log format → HMAC chain ───────────────
     const auditMigrate = migrateAuditChainIfNeeded(AUDIT_FILE);
     if (auditMigrate.migrated) {
         log('INFO', `Audit log migrated: ${auditMigrate.entries} entries — added HMAC chain hashes`);
     }
-
-    // ── Security: verify audit log integrity ───────────────────────────────
     const auditVerify = verifyAuditChain(AUDIT_FILE);
     if (!auditVerify.ok) {
         log('SECURITY', `AUDIT CHAIN TAMPERED! ${auditVerify.error} (${auditVerify.entries} entries)`);
@@ -2517,8 +1993,6 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
     } else {
         log('INFO', `Audit chain verified: ${auditVerify.entries} entries OK`);
     }
-
-    // ── Security: verify config file integrity ────────────────────────────
     const integrityResults = verifyAllChecksums(CHECKSUM_FILE);
     const tampered = integrityResults.filter(r => !r.ok);
     if (tampered.length > 0) {
@@ -2528,8 +2002,6 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
     } else if (integrityResults.length > 0) {
         log('INFO', `Config integrity verified: ${integrityResults.length} files OK`);
     }
-
-    // ── Initialize checksums for new files ─────────────────────────────────
     if (!fs.existsSync(CHECKSUM_FILE)) {
         updateChecksum(CHECKSUM_FILE, DB_FILE);
         updateChecksum(CHECKSUM_FILE, BAN_FILE);
@@ -2538,11 +2010,9 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
         updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
         log('INFO', 'Config checksums initialized');
     }
-
-    doBackup(); // Backup on startup
-    repairDBMaxPlayers(); // Quét và sửa các entry có max_players lỗi
+    doBackup(); 
+    repairDBMaxPlayers(); 
 });
-
 function shutdown(signal) {
     log('INFO', `${signal} received, shutting down gracefully...`);
     const forceExit = setTimeout(() => process.exit(1), 10000);
@@ -2554,6 +2024,5 @@ function shutdown(signal) {
         });
     });
 }
-
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
