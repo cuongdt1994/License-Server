@@ -336,7 +336,7 @@ function getGeoIP(ip) {
     if (geoCache[ip]) return Promise.resolve(geoCache[ip]);
     return new Promise(resolve => {
         const req = http.get(
-            `http:
+            `http://ip-api.com/json/${ip}?fields=status,country,countryCode,city`,
             res => {
                 let body = '';
                 res.on('data', d => body += d);
@@ -449,7 +449,6 @@ setInterval(() => {
             sendTelegram(`🔴 <b>Server Offline</b>\n<code>${mid}</code>\nIP: ${info.ip}\nReason: heartbeat timeout`);
             dispatchWebhook('machine.offline', { mid, ip: info.ip, reason: 'timeout' });
             delete active[mid];
-            }
         }
     }
 }, 60 * 1000);
@@ -1455,7 +1454,7 @@ function operationsSnapshot() {
         },
         dataDir: DATA_DIR,
         dataDirSource: DATA_DIR_INFO.source,
-        webUrl: `http:
+        webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
         tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
         deployStatus: deployManager.status(),
     };
@@ -1774,7 +1773,7 @@ app.get('/machine/:mid', auth, (req, res) => {
         safeActions: commandPolicy.getSafeActions(),
         shellEnabled: settings.advanced_shell_enabled === true,
         shellTimeout: commandPolicy.clampTimeout(settings.agent_shell_timeout || 120, 120),
-        publicBase: req.protocol + ':
+        publicBase: req.protocol + '://' + req.get('host'),
         expiry: expiryInfo(entry), expired: isExpired(entry),
         flash: consumeFlash(req.session),
     });
@@ -1785,7 +1784,7 @@ app.post('/machine/:mid/agent-install', auth, (req, res) => {
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Machine chưa được cấp license.' }; return res.redirect('/machines'); }
     const tok = agent.getOrCreateToken(mid);
     if (req.body.server_dir) agent.setServerDir(mid, req.body.server_dir);
-    const base = (loadSettings().public_url || (req.protocol + ':
+    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '')
     const oneLiner = `curl -fsSL "${base}/agent/install.sh?mid=${encodeURIComponent(mid)}&token=${tok}" | sudo bash`;
     req.session.flash = {
         type: 'success',
@@ -1828,7 +1827,7 @@ app.get('/agent/install.sh', (req, res) => {
     if (!mid || !token || !agent.verifyToken(mid, token)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
-    const base = (loadSettings().public_url || (req.protocol + ':
+    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '')
     res.type('text/plain').send(
         require('./agent_manager').buildInstallScript({ serverUrl: base, mid, token })
     );
@@ -1980,7 +1979,7 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
     res.json(r);
 });
 httpServer.listen(WEB_PORT, BIND_HOST, () => {
-    log('INFO', `Web UI: http:
+    log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
     for (const warning of RUNTIME.warnings) log('WARNING', warning);
     const auditMigrate = migrateAuditChainIfNeeded(AUDIT_FILE);
     if (auditMigrate.migrated) {
