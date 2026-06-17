@@ -56,7 +56,55 @@ const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
 const RUNTIME_SECRETS = ensureRuntimeSecrets({ dataDir: DATA_DIR });
-const SECRET_KEY      = Buffer.from(RUNTIME_SECRETS.tcpSecret);
+
+// TCP secret dùng chung với license_check.cpp. Mặc định server dùng cùng 2 XOR-shares
+// với client để tránh lệch key khi runtime_secret được sinh khác môi trường. Nếu cần
+// override có kiểm soát, đặt LICENSE_TCP_SECRET + LICENSE_ALLOW_RUNTIME_TCP_SECRET=1
+// và build lại client cùng secret đó.
+const TCP_KEY_SHARE_A = Buffer.from([
+    0x98,0x77,0xE5,0x2C,0x80,0x16,0x53,0xF6,
+    0x02,0x7E,0x9D,0x77,0xD1,0x1C,0x7A,0xF4,
+    0x6A,0x8D,0xB9,0x16,0x52,0xC7,0x6D,0xFD,
+    0x22,0x17,0x85,0x4E,0xBC,0x54,0xE6,0x6D,
+]);
+const TCP_KEY_SHARE_B = Buffer.from([
+    0xD3,0x1F,0x8A,0x42,0xE7,0x55,0x3C,0x91,
+    0x6B,0x2D,0xF8,0x14,0xA3,0x79,0x0E,0xC6,
+    0x5A,0xBF,0x8D,0x37,0x12,0xE4,0x49,0xD8,
+    0x7C,0x31,0xAF,0x66,0x95,0x0B,0xCD,0x50,
+]);
+function deriveEmbeddedTcpSecret() {
+    return Buffer.from(TCP_KEY_SHARE_A.map((b, i) => b ^ TCP_KEY_SHARE_B[i]));
+}
+function normalizeSecretBuffer(value) {
+    if (!value) return null;
+    if (Buffer.isBuffer(value)) return Buffer.from(value);
+    const text = String(value).trim();
+    if (/^hex:[0-9a-fA-F]{64}$/.test(text)) return Buffer.from(text.slice(4), 'hex');
+    if (/^[0-9a-fA-F]{64}$/.test(text)) return Buffer.from(text, 'hex');
+    if (/^base64:/i.test(text)) return Buffer.from(text.slice(7), 'base64');
+    return Buffer.from(text, 'utf8');
+}
+function resolveTcpSecret(runtimeSecret) {
+    const embedded = deriveEmbeddedTcpSecret();
+    const envSecret = normalizeSecretBuffer(process.env.LICENSE_TCP_SECRET);
+    if (envSecret) {
+        if (envSecret.length !== 32) throw new Error('LICENSE_TCP_SECRET must be exactly 32 bytes or 64 hex chars.');
+        return { key: envSecret, source: 'env' };
+    }
+    const raw = normalizeSecretBuffer(runtimeSecret);
+    if (raw && raw.length === 32 && raw.equals(embedded)) return { key: raw, source: 'runtime' };
+    if (raw && raw.length === 32 && process.env.LICENSE_ALLOW_RUNTIME_TCP_SECRET === '1') {
+        return { key: raw, source: 'runtime-override' };
+    }
+    return {
+        key: embedded,
+        source: 'embedded-client-sync',
+        warning: 'TCP secret fallback: server is using the embedded client-synced secret. Set LICENSE_TCP_SECRET and rebuild client if you intentionally rotate it.',
+    };
+}
+const TCP_SECRET_INFO = resolveTcpSecret(RUNTIME_SECRETS.tcpSecret);
+const SECRET_KEY      = TCP_SECRET_INFO.key;
 const DB_FILE         = path.join(DATA_DIR, 'whitelist.json');
 const BAN_FILE        = path.join(DATA_DIR, 'bans.json');
 const LOG_FILE        = path.join(DATA_DIR, 'license.log');
@@ -70,46 +118,69 @@ const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
 const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
+RUNTIME.tcpSecretSource = TCP_SECRET_INFO.source;
+if (!Array.isArray(RUNTIME.warnings)) RUNTIME.warnings = [];
+if (TCP_SECRET_INFO.warning) RUNTIME.warnings.push(TCP_SECRET_INFO.warning);
 
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
 const DEFAULT_PLAYERS = 10;  // Basic tier: 10 players
+const MAX_PLAYERS_LIMIT = 100000;
+const UNLIMITED_PLAYERS = 9999;
 
-// ── Safe max_players resolver ─────────────────────────────────────────────────
-// Luôn trả về số nguyên dương. Không bao giờ trả về 0.
-// Xử lý cả string "0" (truthy trong JS nên || không catch được).
-function getMaxPlayers(entry) {
-    if (!entry) return DEFAULT_PLAYERS;
-    if (entry.tier === 'unlimited') return 9999;
-    const mp = parseInt(entry.max_players, 10);
-    if (!Number.isFinite(mp) || mp <= 0) return DEFAULT_PLAYERS;
-    return mp;
+function isHexString(s) { return typeof s === 'string' && /^[0-9a-fA-F]+$/.test(s); }
+function isHexLen(s, n) { return typeof s === 'string' && s.length === n && isHexString(s); }
+function isValidLicenseKey(k) { return isHexLen(String(k || '').trim(), 32); }
+function normalizeLicenseKey(k) { const v = String(k || '').trim(); return isValidLicenseKey(v) ? v.toUpperCase() : ''; }
+function isValidAgentToken(k) { return isHexLen(String(k || '').trim(), 48); }
+function sameKey(a, b) { return String(a || '').toLowerCase() === String(b || '').toLowerCase(); }
+function clampInt(value, fallback, min, max) {
+    const n = Number.parseInt(value, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+function normalizeMaxPlayers(value, tier = 'basic') {
+    if (tier === 'unlimited') return UNLIMITED_PLAYERS;
+    return clampInt(value, DEFAULT_PLAYERS, 1, MAX_PLAYERS_LIMIT);
 }
 
-// Quét và sửa toàn bộ DB: đảm bảo max_players luôn là number > 0
+// ── Safe max_players resolver ─────────────────────────────────────────────────
+// Luôn trả về số nguyên dương, clamp về biên an toàn để client không reject.
+function getMaxPlayers(entry) {
+    if (!entry) return DEFAULT_PLAYERS;
+    return normalizeMaxPlayers(entry.max_players, entry.tier);
+}
+
+function normalizeMachineEntry(entry) {
+    if (!entry || typeof entry !== 'object') return { max_players: DEFAULT_PLAYERS, tier: 'basic' };
+    if (!TIERS[entry.tier]) entry.tier = 'basic';
+    entry.max_players = getMaxPlayers(entry);
+    if (entry.license_key && !isValidLicenseKey(entry.license_key)) delete entry.license_key;
+    if (Array.isArray(entry.previous_keys)) {
+        const nowMs = Date.now();
+        entry.previous_keys = entry.previous_keys
+            .filter(p => p && isValidLicenseKey(p.key) && (!p.expires_at || p.expires_at > nowMs))
+            .slice(-5);
+    }
+    return entry;
+}
+
+// Quét và sửa toàn bộ DB: đảm bảo max_players/key luôn hợp lệ
 function repairDBMaxPlayers() {
     const db = loadDB();
     let changed = false;
     for (const [mid, entry] of Object.entries(db)) {
-        if (entry.tier === 'unlimited') {
-            if (entry.max_players !== 9999) { entry.max_players = 9999; changed = true; }
-            continue;
-        }
-        const mp = parseInt(entry.max_players, 10);
-        if (!Number.isFinite(mp) || mp <= 0) {
-            entry.max_players = DEFAULT_PLAYERS;
-            changed = true;
-        } else if (typeof entry.max_players !== 'number') {
-            entry.max_players = mp;
-            changed = true;
-        }
+        const before = JSON.stringify(entry);
+        db[mid] = normalizeMachineEntry(entry);
+        if (JSON.stringify(db[mid]) !== before) changed = true;
     }
     if (changed) {
         saveDB(db);
-        log('INFO', `DB repaired: fixed max_players → ${DEFAULT_PLAYERS} for entries with invalid/zero values`);
+        log('INFO', `DB repaired: normalized max_players/license keys`);
     }
 }
 
-const MAX_STATS_PER_MACHINE = 720;   // ~16h at 80s heartbeat
+const STATS_SAMPLE_MS = 60 * 1000;
+const MAX_STATS_PER_MACHINE = 1440;  // ~24h at 60s stats sampling
 const MAX_HISTORY     = 1000;
 const ZOMBIE_DAYS     = 30;          // Mark zombie nếu offline > N ngày
 const deployManager   = createDeployManager({ cwd: __dirname, historyFile: path.join(DATA_DIR, 'deploy_history.json') });
@@ -127,7 +198,16 @@ const TIERS = {
 // Plaintext format: "<unix_ms>|<payload>"  → reject nếu lệch > REPLAY_WINDOW_MS
 const CIPHER = 'aes-256-gcm';
 const REPLAY_WINDOW_MS = 30 * 1000;        // 30s
+const MAX_TCP_FRAME_BYTES = 16 * 1024;
+const MAX_SEEN_NONCES = 20000;
+const TCP_SOCKET_TIMEOUT_MS = 8000;
+const TCP_MAX_BUFFER_BYTES = MAX_TCP_FRAME_BYTES * 2 + 128;
 const seenNonces = new Map();              // iv_hex → expireAt (chống replay đúng nghĩa)
+
+function purgeSeenNonces(nowMs = Date.now()) {
+    for (const [k, exp] of seenNonces) if (exp <= nowMs) seenNonces.delete(k);
+    while (seenNonces.size > MAX_SEEN_NONCES) seenNonces.delete(seenNonces.keys().next().value);
+}
 
 function tcpEncrypt(plain) {
     const iv  = crypto.randomBytes(12);
@@ -140,32 +220,34 @@ function tcpEncrypt(plain) {
 
 function tcpDecrypt(line) {
     try {
-        const t = line.trim();
+        const t = String(line || '').trim();
+        if (!t || t.length > MAX_TCP_FRAME_BYTES * 2) return null;
         const parts = t.split(':');
         if (parts.length !== 3) return null;
         const ivHex  = parts[0], tagHex = parts[1], encHex = parts[2];
-        if (ivHex.length !== 24 || tagHex.length !== 32 || !encHex.length) return null;
+        if (!isHexLen(ivHex, 24) || !isHexLen(tagHex, 32)) return null;
+        if (!encHex || encHex.length % 2 !== 0 || encHex.length > MAX_TCP_FRAME_BYTES * 2 || !isHexString(encHex)) return null;
 
         const iv  = Buffer.from(ivHex,  'hex');
         const tag = Buffer.from(tagHex, 'hex');
         const enc = Buffer.from(encHex, 'hex');
-        if (iv.length !== 12 || tag.length !== 16) return null;
+        if (iv.length !== 12 || tag.length !== 16 || enc.length < 1 || enc.length > MAX_TCP_FRAME_BYTES) return null;
 
         const d = crypto.createDecipheriv(CIPHER, SECRET_KEY, iv);
         d.setAuthTag(tag);
         const out = Buffer.concat([d.update(enc), d.final()]).toString('utf8');
 
-        // Tách timestamp
         const sep = out.indexOf('|');
-        if (sep < 0) return null;
-        const ts = parseInt(out.slice(0, sep), 10);
-        if (!ts || Math.abs(Date.now() - ts) > REPLAY_WINDOW_MS) return null;
+        if (sep <= 0 || sep > 20) return null;
+        const tsRaw = out.slice(0, sep);
+        if (!/^\d+$/.test(tsRaw)) return null;
+        const ts = Number.parseInt(tsRaw, 10);
+        const nowMs = Date.now();
+        if (!Number.isFinite(ts) || Math.abs(nowMs - ts) > REPLAY_WINDOW_MS) return null;
 
-        // Chống replay nonce: từ chối nếu IV đã từng dùng
-        const now = Date.now();
-        for (const [k, exp] of seenNonces) if (exp < now) seenNonces.delete(k);
+        purgeSeenNonces(nowMs);
         if (seenNonces.has(ivHex)) return null;
-        seenNonces.set(ivHex, now + REPLAY_WINDOW_MS);
+        seenNonces.set(ivHex, nowMs + REPLAY_WINDOW_MS);
 
         return out.slice(sep + 1);
     } catch { return null; }
@@ -226,22 +308,56 @@ function loadBans() {
     if (!fs.existsSync(BAN_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(BAN_FILE, 'utf8')); } catch { return {}; }
 }
+function writeFilePrivateAtomic(file, payload) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+        fs.writeFileSync(fd, payload);
+        fs.fsyncSync(fd);
+    } finally {
+        fs.closeSync(fd);
+    }
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, file);
+}
 function saveJsonPrivate(file, data, pretty = true) {
     const payload = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
-    fs.writeFileSync(file, payload, { mode: 0o600 });
+    writeFilePrivateAtomic(file, payload);
 }
 function saveBans(b) {
     saveJsonPrivate(BAN_FILE, b);
     updateChecksum(CHECKSUM_FILE, BAN_FILE);
 }
-function ipToInt(ip) { return ip.split('.').reduce((a, o) => ((a << 8) + parseInt(o, 10)) >>> 0, 0); }
+function normalizeIp(ip) {
+    let v = String(ip || '?').trim();
+    if (v.includes(',')) v = v.split(',')[0].trim();
+    v = v.replace(/^::ffff:/, '');
+    if (v === '::1') return '127.0.0.1';
+    return v || '?';
+}
+function isIPv4(ip) {
+    const parts = String(ip || '').split('.');
+    return parts.length === 4 && parts.every(p => /^\d+$/.test(p) && +p >= 0 && +p <= 255);
+}
+function ipToInt(ip) {
+    if (!isIPv4(ip)) return null;
+    return ip.split('.').reduce((a, o) => ((a << 8) + Number.parseInt(o, 10)) >>> 0, 0);
+}
 function isIpBanned(ip, bans) {
-    for (const [range, info] of Object.entries(bans)) {
-        if (info.disabled) continue;
+    ip = normalizeIp(ip);
+    const ipInt = ipToInt(ip);
+    for (const [rangeRaw, info] of Object.entries(bans || {})) {
+        if (info && info.disabled) continue;
+        const range = String(rangeRaw || '').trim();
+        if (!range) continue;
         if (range.includes('/')) {
-            const [base, bits] = range.split('/');
-            const mask = bits === '0' ? 0 : (~0 << (32 - +bits)) >>> 0;
-            if ((ipToInt(base) & mask) === (ipToInt(ip) & mask)) return true;
+            const [base, bitsRaw] = range.split('/');
+            const bits = Number.parseInt(bitsRaw, 10);
+            const baseInt = ipToInt(base);
+            if (ipInt === null || baseInt === null || !Number.isInteger(bits) || bits < 0 || bits > 32) continue;
+            const mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+            if ((baseInt & mask) === (ipInt & mask)) return true;
         } else if (range.endsWith('.*')) {
             if (ip.startsWith(range.slice(0, -1))) return true;
         } else if (ip === range) return true;
@@ -250,15 +366,20 @@ function isIpBanned(ip, bans) {
 }
 
 // ── Expiry helpers ────────────────────────────────────────────────────────────
+function validDateOrNull(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(d.getTime()) ? d : null;
+}
 function getExpiryDate(entry) {
+    if (!entry) return null;
     let d = null;
     if (entry.tier === 'trial' && entry.trial_days && entry.added) {
-        const base = new Date(entry.added.replace(' ', 'T'));
-        d = new Date(base.getTime() + entry.trial_days * 86400000);
+        const base = validDateOrNull(String(entry.added).replace(' ', 'T'));
+        if (base) d = new Date(base.getTime() + clampInt(entry.trial_days, 7, 1, 3650) * 86400000);
     }
     if (entry.expires_at) {
-        const ed = new Date(entry.expires_at + 'T23:59:59');
-        if (!d || ed < d) d = ed;
+        const ed = validDateOrNull(`${entry.expires_at}T23:59:59`);
+        if (ed && (!d || ed < d)) d = ed;
     }
     return d;
 }
@@ -290,7 +411,7 @@ function loadAdminCredentials() {
             const normalized = normalizeAdminCredentials(raw);
             if (normalized) {
                 if (raw.pass || raw.pass_hash !== normalized.pass_hash) {
-                    fs.writeFileSync(ADMIN_FILE, JSON.stringify(normalized, null, 2), { mode: 0o600 });
+                    writeFilePrivateAtomic(ADMIN_FILE, JSON.stringify(normalized, null, 2) + '\n');
                 }
                 return normalized;
             }
@@ -358,12 +479,20 @@ function loadStats() {
     if (!fs.existsSync(STATS_FILE)) return {};
     try { return JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); } catch { return {}; }
 }
+const _lastStatPush = new Map();
 function pushStat(mid, players) {
+    const ts = Date.now();
+    const prev = _lastStatPush.get(mid);
+    const normalizedPlayers = Math.max(0, Math.min(Number.parseInt(players, 10) || 0, MAX_PLAYERS_LIMIT));
+    if (prev && ts - prev.ts < STATS_SAMPLE_MS && prev.players === normalizedPlayers) return;
+    if (prev && ts - prev.ts < 10 * 1000) return; // hard cap disk writes when player count churns
+
     const s = loadStats();
-    if (!s[mid]) s[mid] = [];
-    s[mid].push([Date.now(), players]);
+    if (!Array.isArray(s[mid])) s[mid] = [];
+    s[mid].push([ts, normalizedPlayers]);
     if (s[mid].length > MAX_STATS_PER_MACHINE) s[mid] = s[mid].slice(-MAX_STATS_PER_MACHINE);
     saveJsonPrivate(STATS_FILE, s, false);
+    _lastStatPush.set(mid, { ts, players: normalizedPlayers });
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
@@ -385,9 +514,14 @@ function generateLicenseKey() {
 
 // ── GeoIP (ip-api.com free, no package needed) ────────────────────────────────
 const geoCache = {};
+function isPrivateIPv4(ip) {
+    if (!isIPv4(ip)) return true;
+    const [a, b] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
 function getGeoIP(ip) {
-    if (!ip || ip === '?' || ip === '127.0.0.1' || ip.startsWith('10.') || ip.startsWith('192.168.'))
-        return Promise.resolve(null);
+    ip = normalizeIp(ip);
+    if (!ip || ip === '?' || isPrivateIPv4(ip)) return Promise.resolve(null);
     if (geoCache[ip]) return Promise.resolve(geoCache[ip]);
     return new Promise(resolve => {
         const req = http.get(
@@ -516,7 +650,18 @@ const _pendingKey        = new Map(); // mid → newKey
 
 // ── TCP connection tracking ───────────────────────────────────────────────────
 const _tcpConnsPerIp = new Map();     // ip → count
-const TCP_MAX_CONCURRENT_PER_IP = 10; // Từ chối connection mới nếu vượt quá
+const TCP_MAX_CONCURRENT_PER_IP = 64; // NAT/proxy friendly, vẫn chống flood
+const _lastHbLog = new Map();
+const HB_LOG_INTERVAL_MS = 60 * 1000;
+const HB_DB_TOUCH_MS = 60 * 1000;
+
+function shouldLogHeartbeat(mid) {
+    const ts = Date.now();
+    const prev = _lastHbLog.get(mid) || 0;
+    if (ts - prev < HB_LOG_INTERVAL_MS) return false;
+    _lastHbLog.set(mid, ts);
+    return true;
+}
 
 // ── HMAC token ────────────────────────────────────────────────────────────────
 function makeToken(mid, maxPl) {
@@ -640,284 +785,378 @@ scheduleDailyTask('weekly_report', 8, 0, () => {
 }, { dayOfWeek: 1 });
 
 // ── TCP License Server ────────────────────────────────────────────────────────
-const tcpServer = net.createServer((socket) => {
-    const ip = (socket.remoteAddress || '').replace('::ffff:', '') || '?';
+function tcpReply(socket, plain) {
+    try {
+        if (socket.destroyed) return;
+        socket.end(tcpEncrypt(String(plain || 'DENY')));
+    } catch {
+        try { socket.destroy(); } catch {}
+    }
+}
 
-    // ── TCP connection tracking ────────────────────────────────────────────
-    // Giới hạn số connection đồng thời trên mỗi IP để chống DDoS.
-    const currentConns = (_tcpConnsPerIp.get(ip) || 0) + 1;
-    _tcpConnsPerIp.set(ip, currentConns);
-    if (currentConns > TCP_MAX_CONCURRENT_PER_IP) {
-        socket.write(tcpEncrypt('DENY'));
-        socket.destroy();
+function handleTcpRequest(socket, ip, raw) {
+    if (tcpRlBlocked(ip)) {
+        tcpReply(socket, 'DENY');
         return;
     }
 
-    socket.setTimeout(15000);
-    let buf = '';
+    if (isIpBanned(ip, loadBans())) {
+        tcpReply(socket, 'DENY');
+        log('WARNING', `TCP BANNED  ${ip}`);
+        return;
+    }
 
-    socket.on('close', () => {
+    const plain = tcpDecrypt(raw);
+    if (!plain) {
+        log('WARNING', `TCP DECRYPT FAIL  ${ip}`);
+        tcpRlFail(ip);
+        socket.end();
+        return;
+    }
+
+    if (isMaintenanceActive()) {
+        tcpReply(socket, 'MAINTENANCE');
+        return;
+    }
+
+    const parts = plain.trim().split(/\s+/);
+    const cmd = parts[0]?.toUpperCase();
+
+    // ── AUTH ──────────────────────────────────────────────────────────────
+    if (cmd === 'AUTH' && parts[1]) {
+        const mid = parts[1];
+        const sentKey = normalizeLicenseKey(parts[2] || '');
+        if (!isValidMachineId(mid)) {
+            tcpReply(socket, 'DENY');
+            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (invalid machine id)`);
+            tcpRlFail(ip);
+            return;
+        }
+
+        const db = loadDB();
+        let entry = db[mid];
+        let justRegistered = false;
+
+        if (!entry) {
+            if (!autoRegisterEnabled()) {
+                tcpReply(socket, 'DENY');
+                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (not registered)`);
+                tcpRlFail(ip);
+                return;
+            }
+            const newKey = generateLicenseKey();
+            entry = {
+                max_players: DEFAULT_PLAYERS,
+                tier: 'basic',
+                note: 'Auto-registered',
+                added: now(),
+                revoked: false,
+                auto: true,
+                peak_players: 0,
+                license_key: newKey,
+                zombie: false,
+            };
+            db[mid] = entry;
+            saveDB(db);
+            justRegistered = true;
+            log('INFO', `AUTH AUTO   ${ip}  [${mid}]  tier=basic max=${DEFAULT_PLAYERS}  key=${newKey}`);
+            sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: ${DEFAULT_PLAYERS} players · Không giới hạn ngày\nKey: ${newKey}`);
+        }
+
+        if (entry.revoked) {
+            tcpReply(socket, 'DENY');
+            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (revoked)`);
+            tcpRlFail(ip);
+            return;
+        }
+        if (isExpired(entry)) {
+            tcpReply(socket, 'DENY');
+            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (expired)`);
+            dispatchWebhook('license.expired', { mid, ip });
+            tcpRlFail(ip);
+            return;
+        }
+
+        if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
+            tcpReply(socket, 'DENY');
+            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (missing key in strict mode)`);
+            tcpRlFail(ip);
+            return;
+        }
+
+        let shouldBootstrapKey = false;
+        const currentKey = normalizeLicenseKey(entry.license_key || '');
+        if (currentKey && !justRegistered) {
+            const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
+            const validKey = !!sentKey && (sentKey === currentKey || prev.some(p => {
+                const prevKey = normalizeLicenseKey(p?.key || '');
+                return prevKey && prevKey === sentKey && (!p.expires_at || p.expires_at > Date.now());
+            }));
+            shouldBootstrapKey = canBootstrapLicenseKey(entry, {
+                sentKey,
+                justRegistered,
+                enabled: licenseKeyBootstrapEnabled(),
+            });
+            if (!validKey && !shouldBootstrapKey) {
+                tcpReply(socket, 'DENY');
+                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
+                tcpRlFail(ip);
+                return;
+            }
+            if (shouldBootstrapKey) {
+                log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
+            }
+            if (!shouldBootstrapKey && sentKey && sentKey !== currentKey) {
+                log('INFO', `AUTH OLD-KEY ${ip}  [${mid}]  -> sync new key`);
+            }
+        }
+
+        if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
+            const allowed = entry.allowed_ips.some(a => {
+                const rule = String(a || '').trim();
+                return rule === ip || (rule.endsWith('.*') && ip.startsWith(rule.slice(0, -1)));
+            });
+            if (!allowed) {
+                tcpReply(socket, 'DENY');
+                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (IP not whitelisted)`);
+                tcpRlFail(ip);
+                return;
+            }
+        }
+
+        if (active[mid] && active[mid].ip !== ip) {
+            log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
+            sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
+            dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
+        }
+
+        const maxPl = getMaxPlayers(entry);
+        const token = makeToken(mid, maxPl);
+        let agentTok = '';
+        try { agentTok = agent.getOrCreateToken(mid) || ''; }
+        catch (e) { log('WARNING', `AGENT TOKEN FAIL [${mid}] ${e.message}`); }
+        if (!isValidAgentToken(agentTok)) agentTok = '';
+
+        const needSyncKey = justRegistered || shouldBootstrapKey || (currentKey && sentKey && sentKey !== currentKey);
+        let okPayload = `OK ${maxPl} ${token}`;
+        if (needSyncKey && currentKey) okPayload += ` ${currentKey}`;
+        if (agentTok) okPayload += ` ${agentTok}`;
+        tcpReply(socket, okPayload);
+
+        const wasOnline = !!active[mid];
+        active[mid] = {
+            ip,
+            players: active[mid]?.players || 0,
+            last_seen: now(),
+            uptime_start: active[mid]?.uptime_start || now(),
+        };
+        if (!wasOnline) {
+            pushHistory({ mid, event: 'online', ip });
+            sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
+            dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
+            wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: 0 });
+        }
+
+        if (entry.zombie) {
+            entry.zombie = false;
+            db[mid] = entry;
+            saveDB(db);
+        }
+        tcpRlSuccess(ip);
+        log('INFO', `AUTH OK     ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
+
+        getGeoIP(ip).then(geo => {
+            if (geo && active[mid]) {
+                active[mid].geo = geo;
+                wsBroadcast('machine.geo', { mid, geo });
+            }
+        });
+        return;
+    }
+
+    // ── HB ────────────────────────────────────────────────────────────────
+    if (cmd === 'HB' && parts[1] && parts[2] !== undefined) {
+        const mid = parts[1];
+        const rawCnt = Number.parseInt(parts[2], 10);
+        const cnt = Number.isFinite(rawCnt) ? Math.max(0, Math.min(rawCnt, MAX_PLAYERS_LIMIT)) : 0;
+        if (!isValidMachineId(mid)) {
+            tcpReply(socket, 'DENY');
+            log('WARNING', `HB DENY     ${ip}  [${mid}]  (invalid machine id)`);
+            tcpRlFail(ip);
+            return;
+        }
+
+        const db = loadDB();
+        const entry = db[mid];
+        if (!entry || entry.revoked) {
+            tcpReply(socket, 'REVOKE');
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
+                dispatchWebhook('license.revoked', { mid, ip });
+            }
+            delete active[mid];
+            wsBroadcast('machine.offline', { mid });
+            log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (revoked)`);
+            return;
+        }
+        if (isExpired(entry)) {
+            tcpReply(socket, 'REVOKE');
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
+                dispatchWebhook('license.expired', { mid, ip });
+            }
+            delete active[mid];
+            wsBroadcast('machine.offline', { mid });
+            log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`);
+            return;
+        }
+
+        normalizeMachineEntry(entry);
+
+        const hbKey = normalizeLicenseKey(parts[3] || '');
+        const currentKey = normalizeLicenseKey(entry.license_key || '');
+        let hbKeyNeedsSync = false;
+        if (hbKey && currentKey) {
+            const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
+            const validHbKey = hbKey === currentKey || prev.some(p => {
+                const prevKey = normalizeLicenseKey(p?.key || '');
+                return prevKey && prevKey === hbKey && (!p.expires_at || p.expires_at > Date.now());
+            });
+            if (!validHbKey) {
+                tcpReply(socket, 'REVOKE');
+                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (wrong heartbeat key)`);
+                tcpRlFail(ip);
+                return;
+            }
+            hbKeyNeedsSync = hbKey !== currentKey;
+        }
+
+        const maxPl = getMaxPlayers(entry);
+        let dbChanged = false;
+        if (cnt > maxPl) {
+            if (!entry._alertOver) {
+                entry._alertOver = true;
+                dbChanged = true;
+                sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tự chặn login mới —`);
+                dispatchWebhook('players.over', { mid, ip, players: cnt, max_players: maxPl });
+            }
+            log('WARNING', `HB OVER     ${ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit, không revoke)`);
+        } else if (cnt < Math.floor(maxPl * 0.9) && entry._alertOver) {
+            entry._alertOver = false;
+            dbChanged = true;
+        }
+
+        if (cnt > (entry.peak_players || 0)) {
+            entry.peak_players = cnt;
+            dbChanged = true;
+        }
+
+        if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
+            entry._alert80 = true;
+            dbChanged = true;
+            sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
+            dispatchWebhook('players.high', { mid, ip, players: cnt, max_players: maxPl });
+        } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7) && entry._alert80) {
+            entry._alert80 = false;
+            dbChanged = true;
+        }
+
+        const nowMs = Date.now();
+        if (!entry.last_hb_ts || nowMs - entry.last_hb_ts >= HB_DB_TOUCH_MS) {
+            entry.last_hb_ts = nowMs;
+            dbChanged = true;
+        }
+        if (dbChanged) {
+            db[mid] = entry;
+            saveDB(db);
+        }
+
+        pushStat(mid, cnt);
+
+        if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
+            log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
+        }
+
+        let hbExtra = '';
+        const pendingMax = _pendingMaxPlayers.get(mid);
+        const pendingKey = normalizeLicenseKey(_pendingKey.get(mid) || '');
+        const keyToPush = pendingKey || (hbKeyNeedsSync ? currentKey : '');
+
+        if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= MAX_PLAYERS_LIMIT) {
+            hbExtra += ` CFGMAX:${pendingMax}`;
+            _pendingMaxPlayers.delete(mid);
+            log('INFO', `HB CFGMAX   [${mid}]  max_players -> ${pendingMax} (real-time push)`);
+        }
+        if (keyToPush) {
+            hbExtra += ` KEY:${keyToPush}`;
+            _pendingKey.delete(mid);
+            log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
+        }
+
+        tcpReply(socket, `OK ${maxPl}${hbExtra}`);
+        active[mid] = {
+            ...active[mid],
+            ip,
+            players: cnt,
+            last_seen: now(),
+            uptime_start: active[mid]?.uptime_start || now(),
+        };
+        wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl, pendingMax: !!pendingMax, pendingKey: !!pendingKey });
+        tcpRlSuccess(ip);
+        if (hbExtra || shouldLogHeartbeat(mid)) {
+            log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
+        }
+        return;
+    }
+
+    tcpReply(socket, 'DENY');
+    tcpRlFail(ip);
+}
+
+const tcpServer = net.createServer((socket) => {
+    const ip = normalizeIp(socket.remoteAddress || '?');
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true, 30000);
+    socket.setTimeout(TCP_SOCKET_TIMEOUT_MS);
+
+    let tracked = true;
+    const currentConns = (_tcpConnsPerIp.get(ip) || 0) + 1;
+    _tcpConnsPerIp.set(ip, currentConns);
+    socket.once('close', () => {
+        if (!tracked) return;
+        tracked = false;
         const n = (_tcpConnsPerIp.get(ip) || 1) - 1;
         if (n <= 0) _tcpConnsPerIp.delete(ip);
         else _tcpConnsPerIp.set(ip, n);
     });
 
+    if (currentConns > TCP_MAX_CONCURRENT_PER_IP) {
+        tcpReply(socket, 'DENY');
+        return;
+    }
+
+    let buf = '';
+    let handled = false;
     socket.on('data', (chunk) => {
-        buf += chunk.toString();
+        if (handled) return;
+        buf += chunk.toString('utf8');
+        if (buf.length > TCP_MAX_BUFFER_BYTES) {
+            handled = true;
+            log('WARNING', `TCP OVERSIZE ${ip} len=${buf.length}`);
+            tcpRlFail(ip);
+            socket.destroy();
+            return;
+        }
         const nl = buf.indexOf('\n');
-        if (nl === -1 && buf.length < 1024) return;
-        const raw = buf.slice(0, nl === -1 ? buf.length : nl + 1);
-        buf = '';
-
-        // TCP rate limit
-        if (tcpRlBlocked(ip)) {
-            socket.write(tcpEncrypt('DENY')); socket.end(); return;
+        if (nl === -1) return;
+        const raw = buf.slice(0, nl + 1);
+        handled = true;
+        try {
+            handleTcpRequest(socket, ip, raw);
+        } catch (e) {
+            log('ERROR', `TCP HANDLER ERROR ${ip}: ${e.message}`);
+            socket.destroy();
         }
-
-        const plain = tcpDecrypt(raw);
-        if (!plain) {
-            log('WARNING', `TCP DECRYPT FAIL  ${ip}`);
-            tcpRlFail(ip); socket.end(); return;
-        }
-
-        if (isIpBanned(ip, loadBans())) {
-            socket.write(tcpEncrypt('DENY'));
-            log('WARNING', `TCP BANNED  ${ip}`); socket.end(); return;
-        }
-
-        // Maintenance mode
-        if (isMaintenanceActive()) {
-            socket.write(tcpEncrypt('MAINTENANCE')); socket.end(); return;
-        }
-
-        const parts = plain.trim().split(' ');
-        const cmd   = parts[0]?.toUpperCase();
-
-        // ── AUTH ──────────────────────────────────────────────────────────────
-        if (cmd === 'AUTH' && parts[1]) {
-            const mid     = parts[1];
-            const sentKey = parts[2] || null;
-            if (!isValidMachineId(mid)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (invalid machine id)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            const db      = loadDB();
-            let entry     = db[mid];
-            let justRegistered = false;
-
-            if (!entry) {
-                if (!autoRegisterEnabled()) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (not registered)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-                const newKey = generateLicenseKey();
-                entry = {
-                    max_players: 10, tier: 'basic',
-                    note: 'Auto-registered', added: now(), revoked: false, auto: true,
-                    peak_players: 0, license_key: newKey, zombie: false,
-                };
-                db[mid] = entry; saveDB(db);
-                justRegistered = true;
-                log('INFO', `AUTH AUTO   ${ip}  [${mid}]  tier=basic max=10  key=${newKey}`);
-                sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: 10 players · Không giới hạn ngày\nKey: ${newKey}`);
-            }
-
-            if (entry.revoked) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (revoked)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            if (isExpired(entry)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (expired)`);
-                dispatchWebhook('license.expired', { mid, ip }); tcpRlFail(ip); socket.end(); return;
-            }
-
-            if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (missing key in strict mode)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-
-            // License key verification — bỏ qua nếu vừa auto-register (client chưa biết key)
-            // Chấp nhận previous_keys trong grace window để client có thời gian đồng bộ key mới
-            let shouldBootstrapKey = false;
-            if (entry.license_key && !justRegistered) {
-                const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
-                const validKey = sentKey && (sentKey === entry.license_key
-                    || prev.some(p => p && p.key === sentKey
-                                       && (!p.expires_at || p.expires_at > Date.now())));
-                shouldBootstrapKey = canBootstrapLicenseKey(entry, {
-                    sentKey,
-                    justRegistered,
-                    enabled: licenseKeyBootstrapEnabled(),
-                });
-                if (!validKey && !shouldBootstrapKey) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-                if (shouldBootstrapKey) {
-                    log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
-                }
-                // Key cũ vẫn hợp lệ → gửi key mới xuống client lần này (qua AUTH OK payload bên dưới)
-                if (!shouldBootstrapKey && sentKey !== entry.license_key) {
-                    log('INFO', `AUTH OLD-KEY ${ip}  [${mid}]  → sẽ đồng bộ key mới`);
-                }
-            }
-
-            // IP whitelist per machine
-            if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
-                const allowed = entry.allowed_ips.some(a =>
-                    a === ip || (a.endsWith('.*') && ip.startsWith(a.slice(0, -1)))
-                );
-                if (!allowed) {
-                    socket.write(tcpEncrypt('DENY'));
-                    log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (IP not whitelisted)`);
-                    tcpRlFail(ip); socket.end(); return;
-                }
-            }
-
-            // Multi-IP detection
-            if (active[mid] && active[mid].ip !== ip) {
-                log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
-                sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
-                dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
-            }
-
-            const maxPl   = getMaxPlayers(entry);
-            const token   = makeToken(mid, maxPl);
-            // Cấp/lấy agent token để client tự cài agent điều khiển từ xa
-            const agentTok = agent.getOrCreateToken(mid);
-            // Format response:
-            //   OK <max> <hmac>                          → auth thường, không agent
-            //   OK <max> <hmac> <agent_token>            → auth thường + agent
-            //   OK <max> <hmac> <new_key>                → auto-register / bootstrap / sync key mới
-            //   OK <max> <hmac> <new_key> <agent_token>  → bootstrap / sync key + agent
-            // Client phân giải bằng heuristic: license_key = 32 hex, agent token = 48 hex.
-            const needSyncKey = justRegistered
-                || shouldBootstrapKey
-                || (entry.license_key && sentKey && sentKey !== entry.license_key);
-            let okPayload = `OK ${maxPl} ${token}`;
-            if (needSyncKey && entry.license_key) okPayload += ` ${entry.license_key}`;
-            if (agentTok) okPayload += ` ${agentTok}`;
-            socket.write(tcpEncrypt(okPayload));
-
-            const wasOnline = !!active[mid];
-            active[mid] = {
-                ip, players: active[mid]?.players || 0,
-                last_seen: now(), uptime_start: active[mid]?.uptime_start || now(),
-            };
-            if (!wasOnline) {
-                pushHistory({ mid, event: 'online', ip });
-                sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
-                dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
-                wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: 0 });
-            }
-
-            // Clear zombie flag
-            if (entry.zombie) { entry.zombie = false; db[mid] = entry; saveDB(db); }
-            tcpRlSuccess(ip);
-            log('INFO', `AUTH OK     ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
-
-            // GeoIP async (non-blocking)
-            getGeoIP(ip).then(geo => {
-                if (geo && active[mid]) {
-                    active[mid].geo = geo;
-                    wsBroadcast('machine.geo', { mid, geo });
-                }
-            });
-
-        // ── HB ────────────────────────────────────────────────────────────────
-        } else if (cmd === 'HB' && parts[1] && parts[2] !== undefined) {
-            const mid = parts[1];
-            const cnt = parseInt(parts[2]) || 0;
-            if (!isValidMachineId(mid)) {
-                socket.write(tcpEncrypt('DENY'));
-                log('WARNING', `HB DENY     ${ip}  [${mid}]  (invalid machine id)`);
-                tcpRlFail(ip); socket.end(); return;
-            }
-            const db  = loadDB();
-            const entry = db[mid];
-
-            if (!entry || entry.revoked) {
-                socket.write(tcpEncrypt('REVOKE'));
-                if (active[mid]) { pushHistory({ mid, event: 'offline', ip, reason: 'revoked' }); dispatchWebhook('license.revoked', { mid, ip }); }
-                delete active[mid]; wsBroadcast('machine.offline', { mid });
-                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (revoked)`); socket.end(); return;
-            }
-            if (isExpired(entry)) {
-                socket.write(tcpEncrypt('REVOKE'));
-                if (active[mid]) { pushHistory({ mid, event: 'offline', ip, reason: 'expired' }); dispatchWebhook('license.expired', { mid, ip }); }
-                delete active[mid]; wsBroadcast('machine.offline', { mid });
-                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`); socket.end(); return;
-            }
-
-            const maxPl = getMaxPlayers(entry);
-            // KHÔNG revoke khi vượt quota — vì client gs sẽ _exit(1) làm sập
-            // toàn bộ game server, mọi người bị kick về login. Chỉ alert.
-            // Hard-limit thực sự đã được áp dụng phía gs (userlogin.cpp) tự
-            // chặn login mới khi online > max_pl.
-            if (cnt > maxPl) {
-                if (!entry._alertOver) {
-                    entry._alertOver = true;
-                    sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tự chặn login mới —`);
-                    dispatchWebhook('players.over', { mid, ip, players: cnt, max_players: maxPl });
-                }
-                log('WARNING', `HB OVER     ${ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit, không revoke)`);
-            } else if (cnt < Math.floor(maxPl * 0.9)) {
-                entry._alertOver = false;
-            }
-
-            // Peak players update
-            if (cnt > (entry.peak_players || 0)) { entry.peak_players = cnt; }
-
-            // 80% player alert
-            if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
-                entry._alert80 = true;
-                sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
-                dispatchWebhook('players.high', { mid, ip, players: cnt, max_players: maxPl });
-            } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7)) {
-                entry._alert80 = false;
-            }
-
-            entry.last_hb_ts = Date.now();
-            db[mid] = entry; saveDB(db);
-
-            pushStat(mid, cnt);
-
-            if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
-                log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
-            }
-
-            // ── CFGMAX + KEY real-time push ─────────────────────────────────────
-            // Nếu admin đã thay đổi max_players hoặc license key trên web UI,
-            // gửi kèm CFGMAX:<n> và/hoặc KEY:<hex> trong HB response.
-            // Client (license_check.h F9) parse các field này và áp dụng ngay
-            // mà không cần restart. Sau khi gửi, clear pending flag.
-            let hbExtra = '';
-            const pendingMax = _pendingMaxPlayers.get(mid);
-            const pendingKey = _pendingKey.get(mid);
-
-            if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= 100000) {
-                hbExtra += ` CFGMAX:${pendingMax}`;
-                _pendingMaxPlayers.delete(mid);
-                log('INFO', `HB CFGMAX   [${mid}]  max_players → ${pendingMax} (real-time push)`);
-            }
-            if (pendingKey !== undefined && pendingKey.length === 32) {
-                hbExtra += ` KEY:${pendingKey}`;
-                _pendingKey.delete(mid);
-                log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
-            }
-
-            socket.write(tcpEncrypt(`OK ${maxPl}${hbExtra}`));
-            active[mid] = { ...active[mid], ip, players: cnt, last_seen: now(), uptime_start: active[mid]?.uptime_start || now() };
-            wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl, pendingMax: !!pendingMax, pendingKey: !!pendingKey });
-            log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
-        }
-        socket.end();
     });
 
     socket.on('error', () => {});
@@ -939,7 +1178,7 @@ app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 function clientIp(req) {
-    return (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
+    return normalizeIp(req.socket.remoteAddress || '?');
 }
 const sessionParser = session({
     store: new FileSessionStore({ dir: SESSION_DIR, ttlMs: 8 * 60 * 60 * 1000 }),
@@ -1003,7 +1242,7 @@ function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
 
     rememberDataDir(__dirname, targetInfo.dir);
     const nextCreds = { user, pass_hash: hashPassword(pass) };
-    fs.writeFileSync(path.join(targetInfo.dir, 'admin.json'), JSON.stringify(nextCreds, null, 2), { mode: 0o600 });
+    writeFilePrivateAtomic(path.join(targetInfo.dir, 'admin.json'), JSON.stringify(nextCreds, null, 2) + '\n');
 
     if (path.resolve(targetInfo.dir) === path.resolve(DATA_DIR)) {
         adminCreds = nextCreds;
@@ -1188,8 +1427,8 @@ app.get('/machines', auth, (req, res) => {
 app.post('/add', auth, (req, res) => {
     const mid        = (req.body.mid || '').trim();
     const tier       = ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : 'basic';
-    const maxPl      = tier === 'unlimited' ? 9999 : (parseInt(req.body.max_players) || DEFAULT_PLAYERS);
-    const trial_days = parseInt(req.body.trial_days) || 7;
+    const maxPl      = tier === 'unlimited' ? UNLIMITED_PLAYERS : normalizeMaxPlayers(req.body.max_players, tier);
+    const trial_days = clampInt(req.body.trial_days, 7, 1, 3650);
     const expires_at = req.body.expires_at || null;
     const note       = (req.body.note || '').trim();
     const gen_key    = req.body.gen_key === '1';
@@ -1223,19 +1462,20 @@ app.post('/add', auth, (req, res) => {
 
 app.post('/update-limit', auth, (req, res) => {
     const mid   = (req.body.mid || '').trim();
-    const maxPl = parseInt(req.body.max_players);
+    const maxPl = Number.parseInt(req.body.max_players, 10);
     const tier  = req.body.tier;
     const exp   = req.body.expires_at;
     const db    = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
     const oldMax = getMaxPlayers(db[mid]);
-    if (!isNaN(maxPl) && maxPl > 0) {
-        db[mid].max_players = maxPl;
+    if (Number.isFinite(maxPl) && maxPl > 0) {
+        db[mid].max_players = Math.min(maxPl, MAX_PLAYERS_LIMIT);
     } else if (db[mid]) {
         // Chỉ dùng getMaxPlayers làm fallback nếu user không tự set max_players
         db[mid].max_players = getMaxPlayers(db[mid]);
     }
     if (tier && TIERS[tier]) db[mid].tier = tier;
+    db[mid].max_players = normalizeMaxPlayers(db[mid].max_players, db[mid].tier);
     if (exp !== undefined) db[mid].expires_at = exp || undefined;
     saveDB(db);
 
@@ -1255,7 +1495,7 @@ app.post('/update-limit', auth, (req, res) => {
 // Gia hạn license
 app.post('/renew', auth, (req, res) => {
     const mid  = (req.body.mid || '').trim();
-    const days = parseInt(req.body.days) || 30;
+    const days = clampInt(req.body.days, 30, 1, 3650);
     const db   = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Không tìm thấy.' }; return res.redirect('/machines'); }
     const entry = db[mid];
@@ -1416,7 +1656,7 @@ app.post('/bulk-revoke', auth, (req, res) => {
 
 app.post('/bulk-renew', auth, (req, res) => {
     const mids = parseMidsFromBody(req.body);
-    const days = parseInt(req.body.days) || 30;
+    const days = clampInt(req.body.days, 30, 1, 3650);
     if (!mids.length) { req.session.flash = { type: 'danger', msg: 'Chưa chọn máy nào.' }; return res.redirect('/machines'); }
     const db = loadDB();
     let done = 0;
@@ -1482,7 +1722,7 @@ app.post('/bulk-tier', auth, (req, res) => {
 app.post('/maintenance', auth, (req, res) => {
     const s = loadSettings();
     const action  = req.body.action;
-    const minutes = parseInt(req.body.minutes) || 0;
+    const minutes = clampInt(req.body.minutes, 0, 0, 1440);
     if (action === 'on') {
         s.maintenance       = true;
         s.maintenance_until = minutes > 0 ? Date.now() + minutes * 60000 : null;
@@ -1507,9 +1747,9 @@ app.post('/plans/add', auth, (req, res) => {
         id: crypto.randomBytes(4).toString('hex'),
         name:        (req.body.name || '').trim(),
         tier:        ['trial', 'basic', 'pro', 'unlimited'].includes(req.body.tier) ? req.body.tier : 'basic',
-        max_players: parseInt(req.body.max_players) || DEFAULT_PLAYERS,
-        trial_days:  parseInt(req.body.trial_days) || 0,
-        expires_days:parseInt(req.body.expires_days) || 0,
+        max_players: normalizeMaxPlayers(req.body.max_players, req.body.tier),
+        trial_days:  clampInt(req.body.trial_days, 0, 0, 3650),
+        expires_days:clampInt(req.body.expires_days, 0, 0, 3650),
         note:        (req.body.note || '').trim(),
     };
     if (!p.name) { req.session.flash = { type: 'danger', msg: 'Tên plan trống.' }; return res.redirect('/plans'); }
@@ -1722,7 +1962,7 @@ app.post('/settings/change-password', auth, (req, res) => {
 
     // Save new password
     adminCreds = { user: WEB_USER, pass_hash: hashPassword(newPassword) };
-    fs.writeFileSync(ADMIN_FILE, JSON.stringify(adminCreds, null, 2), { mode: 0o600 });
+    writeFilePrivateAtomic(ADMIN_FILE, JSON.stringify(adminCreds, null, 2) + '\n');
     updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
 
     audit(req, 'settings.change_password', {});
@@ -1752,7 +1992,7 @@ app.post('/import', auth, upload.single('csvfile'), (req, res) => {
         if (db[mid]) { skipped++; errors.push(`${mid}: đã tồn tại`); continue; }
         const validTier = TIERS[tier] ? tier : 'basic';
         db[mid] = {
-            max_players: parseInt(max_players) || DEFAULT_PLAYERS,
+            max_players: normalizeMaxPlayers(max_players, validTier),
             tier: validTier, note: note || 'Imported',
             added: now(), revoked: false, peak_players: 0,
             expires_at: expires_at || undefined, zombie: false,
