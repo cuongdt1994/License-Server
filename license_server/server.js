@@ -668,8 +668,6 @@ function makeToken(mid, maxPl) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`${mid}|${maxPl}`).digest('hex');
 }
 
-// ── WebSocket broadcast (đã gỡ bỏ — không dùng nữa) ───────────────────────────
-function wsBroadcast(event, data) { /* no-op: WebSocket đã bị xóa */ }
 
 // ── Offline detector (5 min timeout) ─────────────────────────────────────────
 setInterval(() => {
@@ -681,7 +679,6 @@ setInterval(() => {
             log('INFO', `OFFLINE     [${mid}]  ip=${info.ip}  (timeout)`);
             sendTelegram(`🔴 <b>Server Offline</b>\n<code>${mid}</code>\nIP: ${info.ip}\nReason: heartbeat timeout`);
             dispatchWebhook('machine.offline', { mid, ip: info.ip, reason: 'timeout' });
-            wsBroadcast('machine.offline', { mid });
             delete active[mid];
         }
     }
@@ -954,7 +951,6 @@ function handleTcpRequest(socket, ip, raw) {
             pushHistory({ mid, event: 'online', ip });
             sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
             dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
-            wsBroadcast('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl, players: 0 });
         }
 
         if (entry.zombie) {
@@ -968,7 +964,6 @@ function handleTcpRequest(socket, ip, raw) {
         getGeoIP(ip).then(geo => {
             if (geo && active[mid]) {
                 active[mid].geo = geo;
-                wsBroadcast('machine.geo', { mid, geo });
             }
         });
         return;
@@ -995,7 +990,6 @@ function handleTcpRequest(socket, ip, raw) {
                 dispatchWebhook('license.revoked', { mid, ip });
             }
             delete active[mid];
-            wsBroadcast('machine.offline', { mid });
             log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (revoked)`);
             return;
         }
@@ -1006,7 +1000,6 @@ function handleTcpRequest(socket, ip, raw) {
                 dispatchWebhook('license.expired', { mid, ip });
             }
             delete active[mid];
-            wsBroadcast('machine.offline', { mid });
             log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`);
             return;
         }
@@ -1101,7 +1094,6 @@ function handleTcpRequest(socket, ip, raw) {
             last_seen: now(),
             uptime_start: active[mid]?.uptime_start || now(),
         };
-        wsBroadcast('machine.hb', { mid, players: cnt, max_players: maxPl, pendingMax: !!pendingMax, pendingKey: !!pendingKey });
         tcpRlSuccess(ip);
         if (hbExtra || shouldLogHeartbeat(mid)) {
             log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
@@ -1589,7 +1581,6 @@ app.post('/delete-machine', auth, (req, res) => {
 
     // Gỡ khỏi active map
     if (active[mid]) {
-        wsBroadcast('machine.offline', { mid });
         delete active[mid];
     }
 
@@ -1686,7 +1677,7 @@ app.post('/bulk-delete', auth, (req, res) => {
         if (!db[mid]) continue;
         delete db[mid];
         try { agent.uninstall(mid); } catch {}
-        if (active[mid]) { wsBroadcast('machine.offline', { mid }); delete active[mid]; }
+        if (active[mid]) { delete active[mid]; }
         try {
             const stats = loadStats();
             if (stats[mid]) { delete stats[mid]; saveJsonPrivate(STATS_FILE, stats, false); }
@@ -2038,8 +2029,6 @@ app.get('/logs', auth, (req, res) => {
     if (fs.existsSync(LOG_FILE)) lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-80);
     res.render('logs', { lines });
 });
-
-// ── Plans CRUD ────────────────────────────────────────────────────────────────
 
 // ── Portal (self-service khách hàng) ─────────────────────────────────────────
 app.get('/portal', (req, res) => res.render('portal', { result: null, error: null }));

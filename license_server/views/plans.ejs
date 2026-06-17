@@ -4,227 +4,100 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Plans — License Manager</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-  <style>
-    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
-    * { box-sizing: border-box; }
-    body     { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; min-height: 100vh; }
-    .topbar  { background: var(--surface); border-bottom: 1px solid var(--border);
-               padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; z-index: 20; }
-    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
-    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
-    .nav-btns { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
-    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
-                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
-    .nav-btns a:hover      { background: var(--border); color: #fff; }
-    .nav-btns a.active     { background: var(--primary); color: #fff; }
-    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
-    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
-    .page    { padding: 24px; max-width: 1480px; margin: 0 auto; }
-    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-    .page-header h5 { margin: 0; font-size: 1.1rem; font-weight: 700; }
-    .btn-add { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
-               border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer;
-               display: flex; align-items: center; gap: 6px; transition: opacity .15s; }
-    .btn-add:hover { opacity: .85; }
-    .info-box { background: #1e2d40; border: 1px solid #2d4a6b; border-radius: 10px;
-                padding: 14px 18px; margin-bottom: 20px; font-size: .85rem; color: #93c5fd; }
-    .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: .875rem; display: flex; align-items: center; gap: 10px; }
-    .flash-success { background: #064e3b; color: #6ee7b7; border: 1px solid #065f46; }
-    .flash-danger  { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
-    /* Plans grid */
-    .plan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-    .plan-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-                 padding: 20px; position: relative; transition: border-color .15s; }
-    .plan-card:hover { border-color: var(--primary); }
-    .plan-name  { font-size: 1.05rem; font-weight: 700; margin-bottom: 6px; }
-    .plan-tier  { display: inline-block; padding: 3px 10px; border-radius: 999px;
-                  font-size: .72rem; font-weight: 700; margin-bottom: 14px; }
-    .plan-spec  { font-size: .85rem; color: var(--muted); line-height: 1.7; }
-    .plan-spec b { color: var(--text); font-weight: 600; }
-    .plan-note  { font-size: .8rem; color: var(--muted); margin-top: 10px;
-                  padding-top: 10px; border-top: 1px solid var(--border); font-style: italic; }
-    .plan-actions { position: absolute; top: 14px; right: 14px; }
-    .btn-del { background: transparent; color: var(--muted); border: none; cursor: pointer;
-               padding: 6px 8px; border-radius: 6px; font-size: 1rem; transition: all .15s; }
-    .btn-del:hover { background: #7f1d1d; color: #f87171; }
-    .empty-state { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-                   padding: 60px 20px; text-align: center; color: var(--muted); }
-    .empty-state i { font-size: 2.5rem; display: block; margin-bottom: 12px; color: var(--border); }
-    /* Modal */
-    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; align-items: center; justify-content: center; }
-    .overlay.show { display: flex; }
-    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-                 padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
-    .modal-box h5 { margin: 0 0 20px; font-size: 1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-    .form-group { margin-bottom: 14px; }
-    .form-group label { display: block; font-size: .78rem; font-weight: 600; color: var(--muted);
-                        text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
-    .form-group input, .form-group select {
-      width: 100%; background: #161e2e; color: var(--text); border: 1px solid var(--border);
-      border-radius: 8px; padding: 9px 12px; font-size: .875rem; outline: none; }
-    .form-group input:focus, .form-group select:focus { border-color: var(--primary); }
-    .form-group .hint { font-size: .73rem; color: var(--muted); margin-top: 4px; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .modal-footer-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
-    .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border);
-                  padding: 8px 18px; border-radius: 8px; font-size: .875rem; cursor: pointer; }
-    .btn-cancel:hover { background: var(--border); color: var(--text); }
-    .btn-submit { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
-                  border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer; }
-    .btn-submit:hover { opacity: .85; }
-  </style>
 </head>
 <body>
+<%- include('partials/topbar', { activePage: 'plans' }) %>
+<div class="page page-md">
 
-<div class="topbar">
-  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
-  <div class="nav-btns d-flex gap-1">
-    <a href="/">Dashboard</a>
-    <a href="/machines">Machines</a>
-    <a href="/plans" class="active">Plans</a>
-    <a href="/operations">Operations</a>
-    <a href="/bans">IP Bans</a>
-    <a href="/history">History</a>
-    <a href="/logs">Logs</a>
-    <a href="/settings">Settings</a>
-    <a href="/logout" class="btn-logout">Logout</a>
+  <% if (typeof flash !== 'undefined' && flash) { %>
+  <div class="alert alert-<%= flash.type %>">
+    <% if (flash.type === 'success') { %>✅<% } else { %>⚠️<% } %>
+    <span><%= flash.msg %></span>
+    <button class="alert-close" onclick="this.parentElement.remove()">×</button>
   </div>
-</div>
-
-<div class="page">
-
-  <%- include('partials/flash-toast', { flash: flash }) %>
-
-  <div class="info-box">
-    <i class="bi bi-info-circle me-2"></i>
-    Plans là <b>template</b> để cấp license nhanh. Tạo plan rồi áp dụng khi cấp license mới — không phải gõ tay từng lần.
-  </div>
-
-  <div class="page-header">
-    <h5><i class="bi bi-collection me-2" style="color:var(--primary)"></i>License Plans</h5>
-    <button class="btn-add" onclick="document.getElementById('addOverlay').classList.add('show')">
-      <i class="bi bi-plus-lg"></i> Tạo plan mới
-    </button>
-  </div>
-
-  <% if (plans.length === 0) { %>
-    <div class="empty-state">
-      <i class="bi bi-collection"></i>
-      Chưa có plan nào. Tạo plan đầu tiên để bắt đầu.
-    </div>
-  <% } else { %>
-    <div class="plan-grid">
-      <% plans.forEach(function(p) {
-           var td = TIERS[p.tier] || TIERS.basic;
-      %>
-      <div class="plan-card">
-        <div class="plan-actions">
-          <form method="POST" action="/plans/delete" style="display:inline"
-                onsubmit="return confirm('Xóa plan: <%= p.name %>?')">
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-            <input type="hidden" name="id" value="<%= p.id %>">
-            <button type="submit" class="btn-del" title="Xóa plan"><i class="bi bi-trash"></i></button>
-          </form>
-        </div>
-        <div class="plan-name"><%= p.name %></div>
-        <span class="plan-tier" style="background:<%= td.bg %>;color:<%= td.color %>">
-          <%= td.label %>
-        </span>
-        <div class="plan-spec">
-          <% if (p.tier === 'unlimited') { %>
-            <div><b>Players:</b> Không giới hạn</div>
-          <% } else { %>
-            <div><b>Max players:</b> <%= p.max_players %></div>
-          <% } %>
-          <% if (p.trial_days > 0) { %>
-            <div><b>Dùng thử:</b> <%= p.trial_days %> ngày</div>
-          <% } %>
-          <% if (p.expires_days > 0) { %>
-            <div><b>Hạn sử dụng:</b> <%= p.expires_days %> ngày kể từ ngày cấp</div>
-          <% } %>
-          <% if (!p.trial_days && !p.expires_days) { %>
-            <div><b>Hạn sử dụng:</b> Không hết hạn</div>
-          <% } %>
-        </div>
-        <% if (p.note) { %>
-          <div class="plan-note">"<%= p.note %>"</div>
-        <% } %>
-      </div>
-      <% }) %>
-    </div>
   <% } %>
-</div>
 
-<!-- Modal tạo plan mới -->
-<div class="overlay" id="addOverlay" onclick="if(event.target===this)this.classList.remove('show')">
-  <div class="modal-box">
-    <h5><i class="bi bi-plus-circle" style="color:var(--primary)"></i>Tạo plan mới</h5>
+  <div class="page-head">
+    <div>
+      <div class="page-eyebrow">Templates</div>
+      <h1 class="page-title">License Plans</h1>
+      <p class="page-sub">Tạo plan mẫu để cấp license nhanh khi thêm machine mới.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title mb-3">➕ Tạo plan mới</div>
     <form method="POST" action="/plans/add">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-
-      <div class="form-group">
-        <label>Tên plan <span style="color:#f87171">*</span></label>
-        <input name="name" placeholder="VD: Gói VIP 1 năm" required autofocus>
-      </div>
-
-      <div class="form-group">
-        <label>Tier</label>
-        <select name="tier" id="tierSel">
-          <option value="trial">Trial — dùng thử</option>
-          <option value="basic" selected>Basic — gói cơ bản</option>
-          <option value="pro">Pro — gói chuyên nghiệp</option>
-          <option value="unlimited">Unlimited — không giới hạn</option>
-        </select>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group" id="maxRow">
-          <label>Max players</label>
-          <input name="max_players" type="number" value="10" min="1" max="9999">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="form-group">
+          <label class="form-label">Tên plan <span class="text-danger">*</span></label>
+          <input name="name" class="form-input" placeholder="VD: Gói VIP 6 tháng" required>
         </div>
-        <div class="form-group" id="trialRow" style="display:none">
-          <label>Trial days</label>
-          <input name="trial_days" type="number" value="7" min="0" max="365">
-          <div class="hint">0 = không tự hết hạn</div>
+        <div class="form-group">
+          <label class="form-label">Tier</label>
+          <select name="tier" class="form-select">
+            <option value="trial">Trial</option>
+            <option value="basic">Basic</option>
+            <option value="pro">Pro</option>
+            <option value="unlimited">Unlimited</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Players</label>
+          <input name="max_players" type="number" value="10" min="1" max="9999" class="form-input">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ngày hết hạn (từ lúc cấp)</label>
+          <input name="expires_days" type="number" value="30" min="0" max="3650" class="form-input">
+          <div class="form-hint">0 = không hết hạn</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Trial days</label>
+          <input name="trial_days" type="number" value="0" min="0" max="365" class="form-input">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú</label>
+          <input name="note" class="form-input" placeholder="Mô tả plan">
         </div>
       </div>
-
-      <div class="form-group">
-        <label>Số ngày hạn sử dụng (tùy chọn)</label>
-        <input name="expires_days" type="number" value="0" min="0" max="3650">
-        <div class="hint">0 = không hết hạn theo ngày · VD: 365 = 1 năm kể từ ngày cấp</div>
-      </div>
-
-      <div class="form-group">
-        <label>Ghi chú</label>
-        <input name="note" placeholder="Mô tả ngắn — VD: Gói tháng cho khách lẻ">
-      </div>
-
-      <div class="modal-footer-btns">
-        <button type="button" class="btn-cancel"
-                onclick="document.getElementById('addOverlay').classList.remove('show')">Hủy</button>
-        <button type="submit" class="btn-submit">
-          <i class="bi bi-check-lg me-1"></i>Tạo plan
-        </button>
-      </div>
+      <button type="submit" class="btn btn-primary mt-3">✅ Tạo plan</button>
     </form>
   </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="card-header" style="padding:16px 20px">
+      <div class="card-title" style="margin:0">📋 Danh sách plans</div>
+      <div class="card-sub"><%= plans.length %> plans</div>
+    </div>
+    <% if (plans.length === 0) { %>
+    <div class="empty"><i>📋</i><p>Chưa có plan nào</p></div>
+    <% } else { %>
+    <div class="table-wrap" style="border:none;border-radius:0">
+    <table>
+      <thead><tr><th>Tên</th><th>Tier</th><th>Max</th><th>Trial Days</th><th>Hạn (ngày)</th><th>Note</th><th>Action</th></tr></thead>
+      <tbody>
+        <% plans.forEach(function(p) { var td = TIERS[p.tier] || TIERS.basic; %>
+        <tr>
+          <td><strong><%= p.name %></strong></td>
+          <td><span class="tier-badge" style="background:<%= td.bg %>;color:<%= td.color %>"><%= td.label %></span></td>
+          <td><%= p.max_players %></td>
+          <td><%= p.trial_days || '—' %></td>
+          <td><%= p.expires_days || '—' %></td>
+          <td class="text-sm text-muted"><%= p.note || '—' %></td>
+          <td>
+            <form method="POST" action="/plans/delete" style="display:inline" onsubmit="return confirm('Xóa plan <%= p.name %>?')">
+              <input type="hidden" name="id" value="<%= p.id %>">
+              <button type="submit" class="btn btn-danger btn-xs">🗑</button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    </div>
+    <% } %>
+  </div>
 </div>
-
-<script>
-  const tierSel = document.getElementById('tierSel');
-  const maxRow  = document.getElementById('maxRow');
-  const trialRow = document.getElementById('trialRow');
-
-  function syncTier() {
-    const t = tierSel.value;
-    maxRow.style.display   = t === 'unlimited' ? 'none' : 'block';
-    trialRow.style.display = t === 'trial'     ? 'block' : 'none';
-  }
-  tierSel.addEventListener('change', syncTier);
-  syncTier();
-</script>
 </body>
 </html>

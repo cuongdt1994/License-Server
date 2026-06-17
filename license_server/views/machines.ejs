@@ -4,258 +4,114 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Machines — License Manager</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
   <style>
-    :root { --bg:#111827; --surface:#1f2937; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
-    * { box-sizing: border-box; }
-    body     { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; min-height: 100vh; }
-    .topbar  { background: var(--surface); border-bottom: 1px solid var(--border);
-               padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; z-index: 20; }
-    .topbar-brand { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
-    .topbar-brand i { color: var(--primary); font-size: 1.3rem; }
-    .nav-btns { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
-    .nav-btns a { color: #d1d5db; text-decoration: none; padding: 6px 14px;
-                  border-radius: 6px; font-size: .875rem; transition: background .15s; }
-    .nav-btns a:hover      { background: var(--border); color: #fff; }
-    .nav-btns a.active     { background: var(--primary); color: #fff; }
-    .nav-btns a.btn-logout { color: #f87171; border: 1px solid #f87171; }
-    .nav-btns a.btn-logout:hover { background: #f87171; color: #fff; }
-    .page    { padding: 24px; max-width: 1480px; margin: 0 auto; }
-    .hero-panel { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 18px; align-items: center;
-                  background: rgba(31,41,55,.92);
-                  border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
-    .hero-copy { min-width: 0; }
-    .eyebrow { color: #93c5fd; font-size: .76rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
-    .hero-title { margin: 0; font-size: 1.25rem; font-weight: 800; line-height: 1.25; }
-    .hero-meta { margin-top: 6px; color: var(--muted); font-size: .86rem; }
-    .hero-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .hero-link { border: 1px solid var(--border); color: #d1d5db; text-decoration: none; padding: 8px 12px; border-radius: 8px; font-size: .82rem; display: inline-flex; align-items: center; gap: 6px; background: rgba(22,30,46,.7); }
-    .hero-link:hover { background: var(--border); color: #fff; }
-    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
-    .metric-card { background: rgba(31,41,55,.92); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; box-shadow: 0 14px 35px rgba(0,0,0,.14); }
-    .metric-label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
-    .metric-value { margin-top: 7px; font-size: 1.55rem; line-height: 1; font-weight: 800; }
-    .metric-sub { margin-top: 6px; color: var(--muted); font-size: .76rem; }
-    .btn-add { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
-               border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer;
-               display: flex; align-items: center; gap: 6px; transition: opacity .15s; }
-    .btn-add:hover { opacity: .85; }
-    .tcard   { background: rgba(31,41,55,.92); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-    .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-                     padding: 14px 16px; border-bottom: 1px solid var(--border); }
-    .table-title { display: flex; align-items: center; gap: 8px; font-size: .95rem; font-weight: 700; }
-    .table-title i { color: var(--primary); }
-    .table-hint { color: var(--muted); font-size: .8rem; }
-    .filter-bar { display:grid; grid-template-columns: minmax(220px, 1fr) 160px 160px auto; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border); background:#182132; align-items:center; }
-    .filter-input, .filter-select { width:100%; background:#111827; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:.85rem; outline:none; }
-    .filter-input:focus, .filter-select:focus { border-color:var(--primary); }
-    .filter-count { color:var(--muted); font-size:.8rem; white-space:nowrap; text-align:right; }
-    .table-scroll { width: 100%; overflow-x: auto; }
-    table    { width: 100%; min-width: 1160px; border-collapse: collapse; }
-    thead th { background: #161e2e; color: #9ca3af; font-size: .78rem; font-weight: 600;
-               text-transform: uppercase; letter-spacing: .05em; padding: 12px 16px; text-align: left; white-space: nowrap; }
-    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
-    tbody tr:last-child { border-bottom: none; }
-    tbody tr:hover { background: #273044; }
-    tbody td { padding: 12px 16px; font-size: .875rem; color: var(--text); vertical-align: middle; }
-    .empty-state { padding: 60px 20px; text-align: center; color: var(--muted); }
-    .empty-state i { font-size: 2.5rem; display: block; margin-bottom: 12px; color: var(--border); }
-    .pill        { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .75rem; font-weight: 700; white-space: nowrap; }
-    .pill-green  { background: #064e3b; color: #34d399; }
-    .pill-red    { background: #7f1d1d; color: #f87171; }
-    .pill-gray   { background: #374151; color: #9ca3af; }
-    .action-row { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
-    .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-                border: 1px solid transparent; border-radius: 6px; color: #fff; cursor: pointer;
-                text-decoration: none; font-size: .86rem; transition: opacity .15s, transform .15s; }
-    .icon-btn:hover { opacity: .88; transform: translateY(-1px); color: #fff; }
-    .icon-btn-primary { background: var(--primary); }
-    .icon-btn-info { background: #0e7490; }
-    .icon-btn-purple { background: #7c3aed; }
-    .icon-btn-muted { background: #475569; }
-    .icon-btn-success { background: #065f46; color: #d1fae5; }
-    .icon-btn-danger { background: #991b1b; color: #fee2e2; }
-    code { background: #161e2e; color: #a5b4fc; padding: 2px 6px; border-radius: 4px; font-size: .78rem; }
-    /* Tier badges */
-    .tier-badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 700; }
-    /* Expiry */
-    .expiry-ok      { color: #34d399; font-size: .8rem; }
-    .expiry-warn    { color: #fbbf24; font-size: .8rem; }
-    .expiry-expired { color: #f87171; font-size: .8rem; font-weight: 700; }
-    /* Inline number input */
-    .num-input { width: 70px; background: #161e2e; color: #f9fafb;
-                 border: 1px solid #374151; border-radius: 6px; padding: 4px 8px; font-size: .85rem; }
-    .num-input:focus { outline: none; border-color: var(--primary); }
-    .btn-tiny  { background: var(--primary); color: #fff; border: none; border-radius: 6px;
-                 padding: 4px 8px; font-size: .8rem; cursor: pointer; }
-    .btn-tiny:hover { opacity: .85; }
-    /* Bulk action bar */
-    .bulk-bar { display:none; align-items:center; gap:8px; padding:10px 16px;
-                background:#1a1f3a; border-bottom:1px solid var(--border); flex-wrap:wrap; }
-    .bulk-bar.visible { display:flex; }
-    .bulk-bar .bulk-count { color:var(--primary); font-weight:700; font-size:.85rem; white-space:nowrap; }
-    .bulk-bar .bulk-actions { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
-    .bulk-btn { padding:6px 12px; border:none; border-radius:6px; font-size:.78rem;
-                font-weight:600; cursor:pointer; display:flex; align-items:center; gap:4px;
-                color:#fff; transition:opacity .15s; white-space:nowrap; }
-    .bulk-btn:hover { opacity:.85; }
-    .bulk-btn-revoke  { background:#991b1b; }
-    .bulk-btn-renew   { background:#0e7490; }
-    .bulk-btn-delete  { background:#7f1d1d; }
-    .bulk-btn-tier    { background:#7c3aed; }
-    .bulk-select { width:18px; height:18px; accent-color:var(--primary); cursor:pointer; flex-shrink:0; }
-    /* Sortable headers */
-    th.sortable { cursor:pointer; user-select:none; position:relative; padding-right:24px !important; }
-    th.sortable:hover { color:#fff; background:#1e2a44; }
-    th.sortable .sort-arrow { position:absolute; right:6px; font-size:.65rem; opacity:.4; }
-    th.sortable.sorted .sort-arrow { opacity:1; color:var(--primary); }
-    /* Renew presets */
-    .preset-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
-    .preset-btn { background:transparent; color:var(--text); border:1px solid var(--border);
-                  padding:5px 10px; border-radius:6px; font-size:.76rem; font-weight:600;
-                  cursor:pointer; transition:all .15s; }
-    .preset-btn:hover { border-color:var(--primary); color:var(--primary); background:#1a1f3a; }
-    /* Bulk tier inline select */
-    .bulk-tier-select { background:#111827; color:#fff; border:1px solid var(--border);
-                        border-radius:6px; padding:5px 8px; font-size:.78rem; }
-    /* Modal */
-    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; align-items: center; justify-content: center; }
-    .overlay.show { display: flex; }
-    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-                 padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
-    .modal-box h5 { margin: 0 0 20px; font-size: 1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-    .form-group { margin-bottom: 14px; }
-    .form-group label { display: block; font-size: .78rem; font-weight: 600; color: var(--muted);
-                        text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
-    .form-group input, .form-group select {
-      width: 100%; background: #161e2e; color: var(--text); border: 1px solid var(--border);
-      border-radius: 8px; padding: 9px 12px; font-size: .875rem; outline: none; }
-    .form-group input:focus, .form-group select:focus { border-color: var(--primary); }
-    .form-group .hint { font-size: .73rem; color: var(--muted); margin-top: 4px; }
-    .modal-footer-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
-    .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border);
-                  padding: 8px 18px; border-radius: 8px; font-size: .875rem; cursor: pointer; }
-    .btn-cancel:hover { background: var(--border); color: var(--text); }
-    .btn-submit { background: var(--primary); color: #fff; border: none; padding: 8px 18px;
-                  border-radius: 8px; font-size: .875rem; font-weight: 600; cursor: pointer; }
-    .btn-submit:hover { opacity: .85; }
-    /* Tier selector grid */
-    .tier-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .tier-opt  { border: 2px solid var(--border); border-radius: 8px; padding: 10px 12px;
-                 cursor: pointer; transition: all .15s; }
+    .num-input { width: 78px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 8px; font-size: .85rem; outline: none; }
+    .num-input:focus { border-color: var(--primary); }
+    .action-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: .84rem; transition: all .15s; text-decoration: none; }
+    .icon-btn:hover { transform: translateY(-1px); }
+    .icon-btn-primary { background: var(--primary); color: #fff; }
+    .icon-btn-info { background: #0c4a6e; color: #bae6fd; }
+    .icon-btn-purple { background: #4c1d95; color: #ddd6fe; }
+    .icon-btn-muted { background: #334155; color: #cbd5e1; }
+    .icon-btn-success { background: #14532d; color: #bbf7d0; }
+    .icon-btn-danger { background: #7f1d1d; color: #fca5a5; }
+    .bulk-bar { display: none; align-items: center; gap: 10px; padding: 10px 16px; background: #1a1f3a; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .bulk-bar.visible { display: flex; }
+    .bulk-count { color: var(--primary); font-weight: 700; font-size: .85rem; white-space: nowrap; }
+    .bulk-btn { padding: 6px 13px; border: none; border-radius: 6px; font-size: .78rem; font-weight: 600; cursor: pointer; color: #fff; transition: opacity .15s; white-space: nowrap; font-family: inherit; }
+    .bulk-btn:hover { opacity: .85; }
+    .bulk-select { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
+    .tier-opt { border: 2px solid var(--border); border-radius: var(--radius-sm); padding: 10px 14px; cursor: pointer; transition: all .15s; }
     .tier-opt:hover { border-color: var(--primary); }
-    .tier-opt input[type=radio] { display: none; }
-    .tier-opt input[type=radio]:checked ~ .tier-label { font-weight: 700; }
-    .tier-opt.selected { border-color: var(--primary); background: #1a1f3a; }
+    .tier-opt.selected { border-color: var(--primary); background: rgba(99,102,241,.08); }
     .tier-label { font-size: .85rem; font-weight: 600; }
-    .tier-sub   { font-size: .72rem; color: var(--muted); margin-top: 2px; }
-    /* trial_days row */
-    .trial-only { display: none; }
-    @media (max-width: 900px) {
-      .hero-panel { grid-template-columns: 1fr; }
-      .hero-actions { justify-content: flex-start; }
-      .metric-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
-      .filter-bar { grid-template-columns: 1fr 1fr; }
-      .page { padding: 18px; }
-    }
-    @media (max-width: 560px) {
-      .metric-grid { grid-template-columns: 1fr; }
-      .table-toolbar { align-items: flex-start; flex-direction: column; }
-      .filter-bar { grid-template-columns: 1fr; }
-      .filter-count { text-align:left; }
-      .btn-add { width: 100%; justify-content: center; }
-    }
+    .tier-sub { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+    th.sortable { cursor: pointer; user-select: none; position: relative; padding-right: 24px !important; }
+    th.sortable:hover { color: #fff; }
+    th.sortable.sorted { color: var(--primary); }
+    .sort-arrow { position: absolute; right: 6px; font-size: .65rem; opacity: .4; }
+    th.sortable.sorted .sort-arrow { opacity: 1; }
   </style>
 </head>
 <body>
 
-<div class="topbar">
-  <div class="topbar-brand">
-    <i class="bi bi-shield-lock-fill"></i>License Manager
-  </div>
-  <div class="nav-btns d-flex gap-1">
-    <a href="/">Dashboard</a>
-    <a href="/machines" class="active">Machines</a>
-    <a href="/plans">Plans</a>
-    <a href="/operations">Operations</a>
-    <a href="/bans">IP Bans</a>
-    <a href="/history">History</a>
-    <a href="/logs">Logs</a>
-    <a href="/settings">Settings</a>
-    <a href="/logout" class="btn-logout">Logout</a>
-  </div>
-</div>
+<%- include('partials/topbar', { activePage: 'machines' }) %>
 
 <div class="page">
 
-  <%- include('partials/flash-toast', { flash: flash }) %>
+  <% if (typeof flash !== 'undefined' && flash) { %>
+  <div class="alert alert-<%= flash.type %>">
+    <% if (flash.type === 'success') { %>✅<% } else { %>⚠️<% } %>
+    <span style="white-space:pre-line"><%= flash.msg %></span>
+    <button class="alert-close" onclick="this.parentElement.remove()">×</button>
+  </div>
+  <% } %>
 
   <%
     var machineRows = Array.isArray(rows) ? rows : [];
     var totalMachines = machineRows.length;
-    var onlineMachines = machineRows.filter(function(row) { return row.isOnline && !row.revoked && !row.expired; }).length;
-    var expiringSoon = machineRows.filter(function(row) {
-      return row.expiry && !row.expired && Number(row.expiry.daysLeft) <= 3;
-    }).length;
-    var revokedMachines = machineRows.filter(function(row) { return row.revoked; }).length;
+    var onlineMachines = machineRows.filter(function(r) { return r.isOnline && !r.revoked && !r.expired; }).length;
+    var expiringSoon = machineRows.filter(function(r) { return r.expiry && !r.expired && Number(r.expiry.daysLeft) <= 3; }).length;
+    var revokedMachines = machineRows.filter(function(r) { return r.revoked; }).length;
   %>
 
-  <section class="hero-panel">
-    <div class="hero-copy">
-      <div class="eyebrow">License server</div>
-      <h1 class="hero-title">Quản lý license theo từng machine</h1>
-      <div class="hero-meta">Theo dõi trạng thái, hạn dùng, license key, IP lock và thao tác quản trị trên từng dòng.</div>
-    </div>
-    <div class="hero-actions">
-      <a class="hero-link" href="/plans"><i class="bi bi-layers"></i>Plans</a>
-      <a class="hero-link" href="/import"><i class="bi bi-upload"></i>Import</a>
-      <button class="btn-add" data-modal-open="addOverlay">
-        <i class="bi bi-plus-lg"></i> Cấp license mới
-      </button>
-    </div>
-  </section>
-
-  <section class="metric-grid" aria-label="Tổng quan license">
-    <div class="metric-card">
-      <div class="metric-label">Tổng machine</div>
-      <div class="metric-value"><%= totalMachines %></div>
-      <div class="metric-sub">Đang có trong whitelist</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Online</div>
-      <div class="metric-value" style="color:#34d399"><%= onlineMachines %></div>
-      <div class="metric-sub">Heartbeat còn hoạt động</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Sắp hết hạn</div>
-      <div class="metric-value" style="color:#fbbf24"><%= expiringSoon %></div>
-      <div class="metric-sub">Còn 3 ngày hoặc ít hơn</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Revoked</div>
-      <div class="metric-value" style="color:#f87171"><%= revokedMachines %></div>
-      <div class="metric-sub">Đã thu hồi quyền dùng</div>
-    </div>
-  </section>
-
-  <div class="tcard">
-    <div class="table-toolbar">
-      <div class="table-title">
-        <i class="bi bi-hdd-stack"></i>
-        Danh sách license
+  <!-- Hero -->
+  <div class="card">
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <div class="page-eyebrow">License management</div>
+        <h1 class="page-title" style="margin:0">Quản lý license theo machine</h1>
+        <p class="page-sub">Theo dõi trạng thái, hạn dùng, license key, IP lock.</p>
       </div>
-      <div class="table-hint"><%= totalMachines %> machine · thao tác trực tiếp trên từng dòng</div>
+      <div class="flex gap-2">
+        <a href="/plans" class="btn btn-outline btn-sm">📋 Plans</a>
+        <a href="/import" class="btn btn-outline btn-sm">📤 Import</a>
+        <button class="btn btn-primary" data-modal-open="addOverlay">➕ Cấp license mới</button>
+      </div>
     </div>
+  </div>
+
+  <!-- Metrics -->
+  <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr)">
+    <div class="stat-card" style="--accent:#6366f1">
+      <div class="stat-label">Tổng machine</div>
+      <div class="stat-value"><%= totalMachines %></div>
+      <div class="stat-sub">Trong whitelist</div>
+    </div>
+    <div class="stat-card" style="--accent:#22c55e">
+      <div class="stat-label">Online</div>
+      <div class="stat-value"><%= onlineMachines %></div>
+      <div class="stat-sub">Heartbeat hoạt động</div>
+    </div>
+    <div class="stat-card" style="--accent:#f59e0b">
+      <div class="stat-label">Sắp hết hạn</div>
+      <div class="stat-value"><%= expiringSoon %></div>
+      <div class="stat-sub">≤ 3 ngày</div>
+    </div>
+    <div class="stat-card" style="--accent:#ef4444">
+      <div class="stat-label">Revoked</div>
+      <div class="stat-value"><%= revokedMachines %></div>
+      <div class="stat-sub">Đã thu hồi</div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="flex items-center justify-between gap-3" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div class="card-title" style="margin:0">🖥 Danh sách license</div>
+      <div class="text-xs text-muted"><%= totalMachines %> machine</div>
+    </div>
+
     <% if (rows.length === 0) { %>
-    <div class="empty-state">
-      <i class="bi bi-hdd-x"></i>
-      Chưa có máy nào được cấp phép
-    </div>
+    <div class="empty"><i>🖥️</i><p>Chưa có máy nào được cấp phép</p></div>
     <% } else { %>
-    <div class="filter-bar">
+
+    <!-- Filters -->
+    <div class="filter-bar" style="grid-template-columns:1fr 150px 140px auto">
       <input id="machineSearch" class="filter-input" type="search" placeholder="Tìm machine, ghi chú, key, IP...">
-      <select id="machineStatusFilter" class="filter-select" data-filter-status>
+      <select id="machineStatusFilter" class="filter-select">
         <option value="">Tất cả trạng thái</option>
         <option value="online">Online</option>
         <option value="offline">Offline</option>
@@ -263,237 +119,127 @@
         <option value="revoked">Revoked</option>
         <option value="zombie">Zombie</option>
       </select>
-      <select id="machineTierFilter" class="filter-select" data-filter-tier>
+      <select id="machineTierFilter" class="filter-select">
         <option value="">Tất cả tier</option>
         <option value="trial">Trial</option>
         <option value="basic">Basic</option>
         <option value="pro">Pro</option>
         <option value="unlimited">Unlimited</option>
       </select>
-      <div class="filter-count"><span id="machineVisibleCount"><%= rows.length %></span>/<%= rows.length %> đang hiển thị</div>
+      <div class="filter-count"><span id="machineVisibleCount"><%= rows.length %></span>/<%= rows.length %> hiển thị</div>
     </div>
+
+    <!-- Bulk bar -->
     <div class="bulk-bar" id="bulkBar">
       <div class="bulk-count"><span id="bulkSelectedCount">0</span> đã chọn</div>
-      <div class="bulk-actions">
-        <form method="POST" action="/bulk-revoke" id="bulkRevokeForm" onsubmit="return confirmBulk('revoke')">
-          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-          <input type="hidden" name="mids" id="bulkRevokeMids">
-          <button type="submit" class="bulk-btn bulk-btn-revoke"><i class="bi bi-slash-circle"></i> Revoke</button>
-        </form>
-        <button type="button" class="bulk-btn bulk-btn-renew" onclick="openBulkRenew()"><i class="bi bi-calendar-plus"></i> Gia hạn</button>
-        <form method="POST" action="/bulk-delete" id="bulkDeleteForm" onsubmit="return confirmBulk('delete')">
-          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-          <input type="hidden" name="mids" id="bulkDeleteMids">
-          <button type="submit" class="bulk-btn bulk-btn-delete"><i class="bi bi-trash"></i> Xóa</button>
-        </form>
-        <select class="bulk-tier-select" id="bulkTierSelect" onchange="submitBulkTier(this.value)">
-          <option value="">Đổi tier →</option>
-          <option value="trial">Trial</option>
-          <option value="basic">Basic</option>
-          <option value="pro">Pro</option>
-          <option value="unlimited">Unlimited</option>
-        </select>
-        <button type="button" class="bulk-btn" style="background:#374151" onclick="clearBulkSelection()">
-          <i class="bi bi-x-lg"></i> Bỏ chọn
-        </button>
-      </div>
+      <form method="POST" action="/bulk-revoke" id="bulkRevokeForm" onsubmit="return confirmBulk('revoke')" style="display:inline">
+        <input type="hidden" name="mids" id="bulkRevokeMids">
+        <button type="submit" class="bulk-btn" style="background:#991b1b">🚫 Revoke</button>
+      </form>
+      <button type="button" class="bulk-btn" style="background:#0e7490" onclick="openBulkRenew()">📅 Gia hạn</button>
+      <form method="POST" action="/bulk-delete" id="bulkDeleteForm" onsubmit="return confirmBulk('delete')" style="display:inline">
+        <input type="hidden" name="mids" id="bulkDeleteMids">
+        <button type="submit" class="bulk-btn" style="background:#7f1d1d">🗑 Xóa</button>
+      </form>
+      <select id="bulkTierSelect" class="filter-select" style="width:auto" onchange="submitBulkTier(this.value)">
+        <option value="">Đổi tier →</option>
+        <option value="trial">Trial</option>
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+        <option value="unlimited">Unlimited</option>
+      </select>
+      <button type="button" class="bulk-btn" style="background:#475569" onclick="clearBulkSelection()">✕ Bỏ chọn</button>
     </div>
-    <div class="table-scroll">
+
+    <div class="table-wrap" style="border:none;border-radius:0">
     <table>
       <thead>
         <tr>
           <th style="width:30px"><input type="checkbox" class="bulk-select" id="selectAllCheckbox" title="Chọn tất cả"></th>
           <th class="sortable" data-sort="mid">Machine ID <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-sort="tier">Tier <span class="sort-arrow">↕</span></th>
-          <th class="sortable" data-sort="max">Max Players <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-sort="max">Max <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-sort="peak">Peak <span class="sort-arrow">↕</span></th>
-          <th class="sortable" data-sort="status">Trạng thái <span class="sort-arrow">↕</span></th>
-          <th class="sortable" data-sort="expiry">Hết hạn <span class="sort-arrow">↕</span></th>
-          <th class="sortable" data-sort="note">Ghi chú <span class="sort-arrow">↕</span></th>
-          <th class="sortable" data-sort="added">Ngày cấp <span class="sort-arrow">↕</span></th>
-          <th>Hành động</th>
+          <th class="sortable" data-sort="status">Status <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-sort="expiry">Expiry <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-sort="note">Note <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-sort="added">Added <span class="sort-arrow">↕</span></th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
         <% rows.forEach(function(row) {
-             var tier = row.tier || 'basic';
-             var td   = TIERS[tier] || TIERS.basic;
-             var rowStatus = row.revoked ? 'revoked' : row.expired ? 'expired' : row.zombie ? 'zombie' : row.isOnline ? 'online' : 'offline';
-             var searchText = [
-               row.mid, tier, row.note, row.license_key,
-               Array.isArray(row.allowed_ips) ? row.allowed_ips.join(' ') : '',
-               rowStatus
-             ].filter(Boolean).join(' ').toLowerCase();
-             // Sort data
-             var sortPeak = row.peak_players || 0;
-             var sortMax  = row.max_players || 0;
-             var sortExpiry = row.expiry ? row.expiry.daysLeft : 9999;
-             var sortAdded = row.added || '';
+          var tier = row.tier || 'basic';
+          var td = TIERS[tier] || TIERS.basic;
+          var rowStatus = row.revoked ? 'revoked' : row.expired ? 'expired' : row.zombie ? 'zombie' : row.isOnline ? 'online' : 'offline';
+          var searchText = [row.mid, tier, row.note, row.license_key, Array.isArray(row.allowed_ips) ? row.allowed_ips.join(' ') : '', rowStatus].filter(Boolean).join(' ').toLowerCase();
         %>
         <tr data-machine-row data-search="<%= searchText %>" data-status="<%= rowStatus %>" data-tier="<%= tier %>"
-            data-sort-mid="<%= row.mid.toLowerCase() %>"
-            data-sort-tier="<%= tier %>"
-            data-sort-max="<%= sortMax %>"
-            data-sort-peak="<%= sortPeak %>"
-            data-sort-status="<%= rowStatus %>"
-            data-sort-expiry="<%= sortExpiry %>"
-            data-sort-note="<%= (row.note || '').toLowerCase() %>"
-            data-sort-added="<%= sortAdded %>">
-          <!-- Checkbox -->
-          <td style="text-align:center">
-            <input type="checkbox" class="bulk-select row-checkbox" data-mid="<%= row.mid %>">
-          </td>
-          <!-- Machine ID -->
+            data-sort-mid="<%= row.mid.toLowerCase() %>" data-sort-tier="<%= tier %>"
+            data-sort-max="<%= row.max_players || 0 %>" data-sort-peak="<%= row.peak_players || 0 %>"
+            data-sort-status="<%= rowStatus %>" data-sort-expiry="<%= row.expiry ? row.expiry.daysLeft : 9999 %>"
+            data-sort-note="<%= (row.note || '').toLowerCase() %>" data-sort-added="<%= row.added || '' %>">
+          <td style="text-align:center"><input type="checkbox" class="bulk-select row-checkbox" data-mid="<%= row.mid %>"></td>
           <td>
             <code><%= row.mid %></code>
-            <% if (row.auto) { %>
-              <span class="pill" style="background:#374151;color:#9ca3af;margin-left:4px;font-size:.68rem">Auto</span>
-            <% } %>
+            <% if (row.auto) { %><span class="badge badge-muted" style="font-size:.65rem;margin-left:3px">Auto</span><% } %>
             <% if (row.license_key) { %>
-              <div style="font-size:.7rem;color:var(--muted);margin-top:4px;font-family:monospace"
-                   title="License key">
-                <i class="bi bi-key-fill" style="color:#a78bfa"></i>
-                <%= row.license_key.slice(0, 8) %>…<%= row.license_key.slice(-4) %>
-              </div>
+              <div class="text-xs text-muted mt-2 font-mono">🔑 <%= row.license_key.slice(0,8) %>…<%= row.license_key.slice(-4) %></div>
             <% } %>
             <% if (Array.isArray(row.allowed_ips) && row.allowed_ips.length) { %>
-              <div style="font-size:.7rem;color:#fbbf24;margin-top:2px"
-                   title="<%= row.allowed_ips.join(', ') %>">
-                <i class="bi bi-shield-fill"></i> IP locked (<%= row.allowed_ips.length %>)
-              </div>
+              <div class="text-xs text-warning mt-2">🛡 IP locked (<%= row.allowed_ips.length %>)</div>
             <% } %>
           </td>
-
-          <!-- Tier badge -->
+          <td><span class="tier-badge" style="background:<%= td.bg %>;color:<%= td.color %>"><%= td.label %></span></td>
           <td>
-            <span class="tier-badge" style="background:<%= td.bg %>;color:<%= td.color %>">
-              <%= td.label %>
-            </span>
-          </td>
-
-          <!-- Max Players (inline edit) -->
-          <td>
-            <form method="POST" action="/update-limit" style="display:flex;gap:4px;align-items:center">
-              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <form method="POST" action="/update-limit" class="flex gap-1 items-center">
               <input type="hidden" name="mid" value="<%= row.mid %>">
-              <input type="number" name="max_players" value="<%= row.max_players %>"
-                     min="1" max="9999" class="num-input">
-              <button type="submit" class="btn-tiny" title="Lưu"><i class="bi bi-check-lg"></i></button>
+              <input type="number" name="max_players" value="<%= row.max_players %>" min="1" max="9999" class="num-input">
+              <button type="submit" class="btn btn-primary btn-xs">✓</button>
             </form>
           </td>
-
-          <!-- Peak players -->
-          <td style="color:#fbbf24;font-weight:700">
-            <%= row.peak_players || 0 %>
-          </td>
-
-          <!-- Status -->
+          <td class="text-warning" style="font-weight:700"><%= row.peak_players || 0 %></td>
           <td>
-            <% if (row.revoked) { %>
-              <span class="pill pill-red">Revoked</span>
-            <% } else if (row.expired) { %>
-              <span class="pill pill-red">Expired</span>
-            <% } else if (row.zombie) { %>
-              <span class="pill" style="background:#451a03;color:#fbbf24">Zombie</span>
+            <% if (row.revoked) { %><span class="badge badge-danger">Revoked</span>
+            <% } else if (row.expired) { %><span class="badge badge-danger">Expired</span>
+            <% } else if (row.zombie) { %><span class="badge badge-warning">Zombie</span>
             <% } else if (row.isOnline) { %>
-              <span class="pill pill-green">● Online</span>
-              <div style="font-size:.72rem;color:var(--muted);margin-top:3px">
-                <%= row.currentPlayers %>/<%= row.max_players %> players
-              </div>
-              <% if (row.pending_cfg) { %>
-              <div style="font-size:.7rem;color:#fbbf24;margin-top:2px" title="Cấu hình đang chờ đồng bộ xuống máy (≤5s)">
-                <i class="bi bi-arrow-repeat"></i>
-                <% if (row.pending_max) { %>max<% } %>
-                <% if (row.pending_max && row.pending_key) { %>+<% } %>
-                <% if (row.pending_key) { %>key<% } %>
-                pending
-              </div>
-              <% } %>
-            <% } else { %>
-              <span class="pill pill-gray">Offline</span>
-            <% } %>
+              <span class="badge badge-success"><span class="status-dot online"></span>Online</span>
+              <div class="text-xs text-muted mt-2"><%= row.currentPlayers %>/<%= row.max_players %> players</div>
+              <% if (row.pending_cfg) { %><div class="badge badge-warning mt-2" style="font-size:.65rem">⏳ pending</div><% } %>
+            <% } else { %><span class="badge badge-muted">Offline</span><% } %>
           </td>
-
-          <!-- Expiry -->
           <td>
             <% if (row.expiry) {
-                 if (row.expired) { %>
-                   <span class="expiry-expired"><i class="bi bi-x-circle me-1"></i>Hết hạn <%= row.expiry.date %></span>
-            <%   } else if (row.expiry.daysLeft <= 3) { %>
-                   <span class="expiry-warn"><i class="bi bi-exclamation-triangle me-1"></i><%= row.expiry.daysLeft %>d còn lại</span>
-            <%   } else { %>
-                   <span class="expiry-ok"><i class="bi bi-calendar-check me-1"></i><%= row.expiry.daysLeft %>d — <%= row.expiry.date %></span>
-            <%   }
-               } else { %>
-               <span style="color:var(--muted);font-size:.8rem">—</span>
-            <% } %>
+              if (row.expired) { %><span class="text-danger text-xs">❌ Hết hạn <%= row.expiry.date %></span><% }
+              else if (row.expiry.daysLeft <= 3) { %><span class="text-warning text-xs">⚠️ <%= row.expiry.daysLeft %>d còn lại</span><% }
+              else { %><span class="text-success text-xs">✅ <%= row.expiry.daysLeft %>d — <%= row.expiry.date %></span><% }
+            } else { %><span class="text-muted text-xs">—</span><% } %>
           </td>
-
-          <!-- Note -->
-          <td style="color:var(--muted);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="<%= row.note||'' %>">
-            <%= row.note || '—' %>
-          </td>
-
-          <!-- Added -->
-          <td style="color:var(--muted);font-size:.78rem;white-space:nowrap"><%= row.added %></td>
-
-          <!-- Actions -->
-          <td style="white-space:nowrap">
+          <td class="text-sm text-muted truncate" title="<%= row.note||'' %>"><%= row.note || '—' %></td>
+          <td class="text-xs text-muted"><%= row.added %></td>
+          <td>
             <div class="action-row">
               <% if (!row.revoked) { %>
-                <button type="button" class="icon-btn icon-btn-info"
-                        title="Gia hạn"
-                        aria-label="Gia hạn"
-                        data-machine-action="renew"
-                        data-mid="<%= row.mid %>">
-                  <i class="bi bi-calendar-plus"></i>
-                </button>
-                <button type="button" class="icon-btn icon-btn-purple"
-                        title="Tạo / đổi license key"
-                        aria-label="Tạo hoặc đổi license key"
-                        data-machine-action="key"
-                        data-mid="<%= row.mid %>"
-                        data-license-key="<%= row.license_key || '' %>">
-                  <i class="bi bi-key"></i>
-                </button>
-                <button type="button" class="icon-btn icon-btn-muted"
-                        title="Transfer"
-                        aria-label="Transfer license"
-                        data-machine-action="transfer"
-                        data-mid="<%= row.mid %>">
-                  <i class="bi bi-arrow-left-right"></i>
-                </button>
-                <form method="POST" action="/revoke" style="display:inline"
-                      onsubmit="return confirm(<%- JSON.stringify(`Thu hồi license của:\n${row.mid}\n\nServer sẽ tắt trong ≤5 phút.`) %>)">
-                  <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <button type="button" class="icon-btn icon-btn-info" title="Gia hạn" data-machine-action="renew" data-mid="<%= row.mid %>" aria-label="Gia hạn">📅</button>
+                <button type="button" class="icon-btn icon-btn-purple" title="License key" data-machine-action="key" data-mid="<%= row.mid %>" data-license-key="<%= row.license_key || '' %>" aria-label="Key">🔑</button>
+                <button type="button" class="icon-btn icon-btn-muted" title="Transfer" data-machine-action="transfer" data-mid="<%= row.mid %>" aria-label="Transfer">↔️</button>
+                <form method="POST" action="/revoke" style="display:inline" onsubmit="return confirm(<%- JSON.stringify('Thu hồi license:\n' + row.mid + '\n\nServer sẽ tắt trong ≤5 phút.') %>)">
                   <input type="hidden" name="mid" value="<%= row.mid %>">
-                  <button type="submit" class="icon-btn icon-btn-danger" title="Thu hồi license" aria-label="Thu hồi license">
-                    <i class="bi bi-slash-circle"></i>
-                  </button>
+                  <button type="submit" class="icon-btn icon-btn-danger" title="Revoke" aria-label="Revoke">🚫</button>
                 </form>
               <% } else { %>
                 <form method="POST" action="/restore" style="display:inline">
-                  <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                   <input type="hidden" name="mid" value="<%= row.mid %>">
-                  <button type="submit" class="icon-btn icon-btn-success" title="Khôi phục license" aria-label="Khôi phục license">
-                    <i class="bi bi-arrow-counterclockwise"></i>
-                  </button>
+                  <button type="submit" class="icon-btn icon-btn-success" title="Khôi phục" aria-label="Restore">🔄</button>
                 </form>
               <% } %>
-              <form method="POST" action="/delete-machine" style="display:inline"
-                    onsubmit="return confirm(<%- JSON.stringify(`XÓA HOÀN TOÀN machine:\n${row.mid}\n\nWhitelist, agent token, stats và lịch sử active sẽ bị gỡ.\nKhách sẽ phải được cấp lại từ đầu (auto-register sẽ sinh key mới).\n\nTiếp tục?`) %>)">
-                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <form method="POST" action="/delete-machine" style="display:inline" onsubmit="return confirm(<%- JSON.stringify('XÓA HOÀN TOÀN:\n' + row.mid + '\n\nWhitelist, agent, stats, history sẽ bị gỡ.') %>)">
                 <input type="hidden" name="mid" value="<%= row.mid %>">
-                <button type="submit" class="icon-btn icon-btn-danger" title="Xóa machine khỏi hệ thống" aria-label="Xóa machine khỏi hệ thống">
-                  <i class="bi bi-trash"></i>
-                </button>
+                <button type="submit" class="icon-btn icon-btn-danger" title="Xóa" aria-label="Delete">🗑</button>
               </form>
-              <a href="/history?mid=<%= encodeURIComponent(row.mid) %>"
-                 class="icon-btn icon-btn-muted"
-                 title="Xem lịch sử" aria-label="Xem lịch sử"><i class="bi bi-clock-history"></i></a>
-              <a href="/machine/<%= encodeURIComponent(row.mid) %>"
-                 class="icon-btn icon-btn-success"
-                 title="SSH / Server control" aria-label="SSH / Server control"><i class="bi bi-terminal"></i></a>
+              <a href="/history?mid=<%= encodeURIComponent(row.mid) %>" class="icon-btn icon-btn-muted" title="History" aria-label="History">📜</a>
+              <a href="/machine/<%= encodeURIComponent(row.mid) %>" class="icon-btn icon-btn-success" title="Control" aria-label="Control">💻</a>
             </div>
           </td>
         </tr>
@@ -505,129 +251,81 @@
   </div>
 </div>
 
-<!-- ── Modal cấp license mới ──────────────────────────────────────────────── -->
+<!-- Modals: Add, Renew, Key, Transfer, Bulk Renew -->
 <div class="overlay" id="addOverlay">
-  <div class="modal-box">
-    <h5>
-      <i class="bi bi-plus-circle" style="color:var(--primary)"></i>
-      Cấp license mới
-    </h5>
+  <div class="modal">
+    <div class="modal-title">➕ Cấp license mới</div>
     <form method="POST" action="/add" id="addForm">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-
-      <% if (plans && plans.length) { %>
+      <% if (typeof plans !== 'undefined' && plans && plans.length) { %>
       <div class="form-group">
-        <label>Áp dụng plan có sẵn (tùy chọn)</label>
-        <select id="planPick" style="width:100%;background:#161e2e;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.875rem">
+        <label class="form-label">Plan có sẵn (tùy chọn)</label>
+        <select id="planPick" class="form-select">
           <option value="">— Không dùng plan —</option>
           <% plans.forEach(function(p) { %>
-            <option value="<%= p.id %>"
-                    data-tier="<%= p.tier %>"
-                    data-max="<%= p.max_players %>"
-                    data-trial="<%= p.trial_days || 0 %>"
-                    data-expdays="<%= p.expires_days || 0 %>"
-                    data-note="<%= p.note || '' %>"><%= p.name %> · <%= TIERS[p.tier].label %></option>
+            <option value="<%= p.id %>" data-tier="<%= p.tier %>" data-max="<%= p.max_players %>" data-trial="<%= p.trial_days || 0 %>" data-expdays="<%= p.expires_days || 0 %>" data-note="<%= p.note || '' %>"><%= p.name %> · <%= TIERS[p.tier].label %></option>
           <% }) %>
         </select>
-        <div class="hint">Chọn plan để tự fill các trường bên dưới</div>
       </div>
       <% } %>
-
       <div class="form-group">
-        <label>Machine ID <span style="color:#f87171">*</span></label>
-        <input name="mid" placeholder="aa:bb:cc:dd:ee:ff|hostname" required autofocus>
-        <div class="hint">Lấy từ stderr khi gs khởi động lần đầu</div>
+        <label class="form-label">Machine ID <span class="text-danger">*</span></label>
+        <input name="mid" class="form-input" placeholder="aa:bb:cc:dd:ee:ff|hostname" required autofocus>
+        <div class="form-hint">Lấy từ stderr khi gs khởi động lần đầu</div>
       </div>
-
-      <!-- Tier selector -->
       <div class="form-group">
-        <label>Tier</label>
-        <div class="tier-grid" id="tierGrid">
-          <label class="tier-opt selected" data-tier="trial">
-            <input type="radio" name="tier" value="trial" checked>
-            <div class="tier-label" style="color:#fbbf24">Trial</div>
-            <div class="tier-sub">Dùng thử có giới hạn ngày</div>
+        <label class="form-label">Tier</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="tierGrid">
+          <% [{val:'trial',color:'#fbbf24',label:'Trial',sub:'Dùng thử có hạn'},{val:'basic',color:'#60a5fa',label:'Basic',sub:'Gói cơ bản'},{val:'pro',color:'#a78bfa',label:'Pro',sub:'Gói chuyên nghiệp'},{val:'unlimited',color:'#34d399',label:'Unlimited',sub:'Không giới hạn player'}].forEach(function(t){ %>
+          <label class="tier-opt <%= t.val==='trial'?'selected':'' %>" data-tier="<%= t.val %>">
+            <input type="radio" name="tier" value="<%= t.val %>" <%= t.val==='trial'?'checked':'' %> style="display:none">
+            <div class="tier-label" style="color:<%= t.color %>"><%= t.label %></div>
+            <div class="tier-sub"><%= t.sub %></div>
           </label>
-          <label class="tier-opt" data-tier="basic">
-            <input type="radio" name="tier" value="basic">
-            <div class="tier-label" style="color:#60a5fa">Basic</div>
-            <div class="tier-sub">Gói cơ bản</div>
-          </label>
-          <label class="tier-opt" data-tier="pro">
-            <input type="radio" name="tier" value="pro">
-            <div class="tier-label" style="color:#a78bfa">Pro</div>
-            <div class="tier-sub">Gói chuyên nghiệp</div>
-          </label>
-          <label class="tier-opt" data-tier="unlimited">
-            <input type="radio" name="tier" value="unlimited">
-            <div class="tier-label" style="color:#34d399">Unlimited</div>
-            <div class="tier-sub">Không giới hạn player</div>
-          </label>
+          <% }) %>
         </div>
       </div>
-
-      <!-- Trial days — chỉ hiển thị khi chọn Trial -->
-      <div class="form-group trial-only" id="trialDaysRow">
-        <label>Số ngày dùng thử</label>
-        <input name="trial_days" type="number" value="7" min="1" max="365">
-        <div class="hint">License tự hết hạn sau N ngày kể từ lúc cấp</div>
+      <div class="form-group" id="trialDaysRow">
+        <label class="form-label">Số ngày dùng thử</label>
+        <input name="trial_days" type="number" value="7" min="1" max="365" class="form-input" style="width:120px">
       </div>
-
-      <!-- Max players (ẩn khi unlimited) -->
       <div class="form-group" id="maxPlayersRow">
-        <label>Số player tối đa</label>
-        <input name="max_players" type="number" value="10" min="1" max="9999">
-        <div class="hint">Vượt giới hạn này → client tự chặn login mới (không kick người chơi hiện tại)</div>
+        <label class="form-label">Số player tối đa</label>
+        <input name="max_players" type="number" value="10" min="1" max="9999" class="form-input" style="width:120px">
+        <div class="form-hint">Vượt giới hạn → client tự chặn login mới</div>
       </div>
-
-      <!-- Expires at (tùy chọn) -->
       <div class="form-group">
-        <label>Ngày hết hạn (tùy chọn)</label>
-        <input name="expires_at" type="date">
-        <div class="hint">Để trống = không hết hạn theo ngày cố định</div>
+        <label class="form-label">Ngày hết hạn (tùy chọn)</label>
+        <input name="expires_at" type="date" class="form-input" style="width:200px">
+        <div class="form-hint">Để trống = không hết hạn</div>
       </div>
-
-      <!-- License key generation -->
       <div class="form-group">
-        <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:.85rem;color:var(--text);font-weight:500">
-          <input type="checkbox" name="gen_key" value="1" checked
-                 style="width:auto;margin:0">
-          Tạo License Key (HEX 32 chars)
+        <label class="form-label" style="text-transform:none;letter-spacing:0;font-size:.85rem;font-weight:500">
+          <input type="checkbox" name="gen_key" value="1" checked style="margin-right:6px"> Tạo License Key (HEX 32 chars)
         </label>
-        <div class="hint">Server chỉ chấp nhận AUTH khi client gửi đúng key này</div>
       </div>
-
-      <!-- IP whitelist -->
       <div class="form-group">
-        <label>IP whitelist (tùy chọn)</label>
-        <input name="allowed_ips" placeholder="VD: 1.2.3.4, 10.0.0.* (mỗi IP cách nhau , hoặc xuống dòng)">
-        <div class="hint">Hỗ trợ wildcard <code>1.2.3.*</code>. Để trống = chấp nhận mọi IP</div>
+        <label class="form-label">IP whitelist (tùy chọn)</label>
+        <input name="allowed_ips" class="form-input" placeholder="1.2.3.4, 10.0.0.*">
+        <div class="form-hint">Hỗ trợ wildcard <code>1.2.3.*</code>. Để trống = mọi IP.</div>
       </div>
-
       <div class="form-group">
-        <label>Ghi chú</label>
-        <input name="note" placeholder="VD: Anh Tuấn — thử nghiệm tháng 1/2025">
+        <label class="form-label">Ghi chú</label>
+        <input name="note" class="form-input" placeholder="VD: Anh Tuấn — thử nghiệm">
       </div>
-
-      <div class="modal-footer-btns">
-        <button type="button" class="btn-cancel" data-modal-close="addOverlay">Hủy</button>
-        <button type="submit" class="btn-submit">
-          <i class="bi bi-check-lg me-1"></i>Cấp phép
-        </button>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-modal-close="addOverlay">Hủy</button>
+        <button type="submit" class="btn btn-primary">✅ Cấp phép</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- ── Modal Renew (gia hạn) ──────────────────────────────────────────────── -->
+<!-- Renew modal -->
 <div class="overlay" id="renewOverlay">
-  <div class="modal-box" style="width:420px">
-    <h5><i class="bi bi-calendar-plus" style="color:#0e7490"></i>Gia hạn license</h5>
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
-      Cộng thêm số ngày vào ngày hết hạn của <code id="renewMidLabel"></code>.
-      Nếu license đã hết hạn, tính từ hôm nay.
-    </p>
-    <div class="preset-row">
+  <div class="modal modal-sm">
+    <div class="modal-title">📅 Gia hạn license</div>
+    <p class="text-sm text-muted mb-3">Cộng thêm ngày cho <code id="renewMidLabel"></code>.</p>
+    <div class="preset-row mb-3">
       <button type="button" class="preset-btn" onclick="setRenewDays(7)">+7d</button>
       <button type="button" class="preset-btn" onclick="setRenewDays(30)">+30d</button>
       <button type="button" class="preset-btn" onclick="setRenewDays(90)">+90d</button>
@@ -635,98 +333,73 @@
       <button type="button" class="preset-btn" onclick="setRenewDays(365)">+365d</button>
     </div>
     <form method="POST" action="/renew">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <input type="hidden" name="mid" id="renewMid">
       <div class="form-group">
-        <label>Số ngày gia hạn</label>
-        <input name="days" id="renewDaysInput" type="number" value="30" min="1" max="3650" required>
-        <div class="hint">Phổ biến: 7, 30, 90, 180, 365</div>
+        <label class="form-label">Số ngày</label>
+        <input name="days" id="renewDaysInput" type="number" value="30" min="1" max="3650" class="form-input" style="width:120px" required>
       </div>
-      <div class="modal-footer-btns">
-        <button type="button" class="btn-cancel" data-modal-close="renewOverlay">Hủy</button>
-        <button type="submit" class="btn-submit" style="background:#0e7490">
-          <i class="bi bi-check-lg me-1"></i>Gia hạn
-        </button>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-modal-close="renewOverlay">Hủy</button>
+        <button type="submit" class="btn btn-info">✅ Gia hạn</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- ── Modal Gen-Key ──────────────────────────────────────────────────────── -->
+<!-- Key modal -->
 <div class="overlay" id="keyOverlay">
-  <div class="modal-box" style="width:440px">
-    <h5><i class="bi bi-key" style="color:#7c3aed"></i>License Key</h5>
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
-      Machine: <code id="keyMidLabel"></code>
-    </p>
-    <div style="background:#161e2e;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px">
-      <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Key hiện tại</div>
-      <div style="font-family:monospace;font-size:.85rem;word-break:break-all" id="keyCurrent">—</div>
+  <div class="modal modal-sm">
+    <div class="modal-title">🔑 License Key</div>
+    <p class="text-sm text-muted mb-2">Machine: <code id="keyMidLabel"></code></p>
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:14px">
+      <div class="form-label">Key hiện tại</div>
+      <div class="font-mono text-sm" id="keyCurrent" style="word-break:break-all">—</div>
     </div>
-    <p style="font-size:.82rem;color:#fbbf24;margin-bottom:14px">
-      <i class="bi bi-exclamation-triangle me-1"></i>
-      Tạo key mới — key cũ vẫn được chấp nhận trong <b>24h</b> để các server đang chạy kịp đồng bộ key mới.
-    </p>
-    <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button type="button" class="btn-cancel" data-modal-close="keyOverlay">Đóng</button>
-      <form method="POST" action="/remove-key" style="display:inline"
-            onsubmit="return confirm('Xóa key — server sẽ AUTH được không cần key. Tiếp tục?')">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+    <p class="text-sm text-warning mb-3">⚠️ Key cũ vẫn được chấp nhận <b>24h</b> để server đồng bộ.</p>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" data-modal-close="keyOverlay">Đóng</button>
+      <form method="POST" action="/remove-key" style="display:inline" onsubmit="return confirm('Xóa key — server sẽ AUTH không cần key. Tiếp tục?')">
         <input type="hidden" name="mid" id="keyMidRemove" value="">
-        <button type="submit" class="btn-submit" style="background:#991b1b">Xóa key</button>
+        <button type="submit" class="btn btn-danger">🗑 Xóa key</button>
       </form>
-      <form method="POST" action="/gen-key" style="display:inline"
-            onsubmit="document.getElementById('keyMidRemove').value = document.getElementById('keyMid').value;">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+      <form method="POST" action="/gen-key" style="display:inline" onsubmit="document.getElementById('keyMidRemove').value = document.getElementById('keyMid').value;">
         <input type="hidden" name="mid" id="keyMid">
-        <button type="submit" class="btn-submit" style="background:#7c3aed">
-          <i class="bi bi-arrow-repeat me-1"></i>Tạo key mới
-        </button>
+        <button type="submit" class="btn btn-primary">🔄 Tạo key mới</button>
       </form>
     </div>
   </div>
 </div>
 
-<!-- ── Modal Transfer ─────────────────────────────────────────────────────── -->
+<!-- Transfer modal -->
 <div class="overlay" id="transferOverlay">
-  <div class="modal-box" style="width:460px">
-    <h5><i class="bi bi-arrow-left-right" style="color:#475569"></i>Transfer license</h5>
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
-      Chuyển license sang Machine ID khác (khi khách thay máy / thay MAC).
-      Tier, max_players, key, hạn dùng — đều giữ nguyên. Stats và history cũng được di chuyển.
-    </p>
-    <form method="POST" action="/transfer"
-          onsubmit="return confirm('Transfer license sang Machine ID mới?\nMachine cũ sẽ bị xóa.')">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+  <div class="modal">
+    <div class="modal-title">↔️ Transfer license</div>
+    <p class="text-sm text-muted mb-3">Chuyển license sang Machine ID khác (thay máy / thay MAC).</p>
+    <form method="POST" action="/transfer" onsubmit="return confirm('Transfer license sang Machine ID mới?\nMachine cũ sẽ bị xóa.')">
       <input type="hidden" name="old_mid" id="transferOldMid">
       <div class="form-group">
-        <label>Từ (Machine ID cũ)</label>
-        <div style="background:#161e2e;border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:monospace;font-size:.85rem;color:#a5b4fc"
-             id="transferOldLabel"></div>
+        <label class="form-label">Từ (Machine ID cũ)</label>
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 13px;font-family:monospace;font-size:.85rem;color:#a5b4fc" id="transferOldLabel"></div>
       </div>
       <div class="form-group">
-        <label>Đến (Machine ID mới) <span style="color:#f87171">*</span></label>
-        <input name="new_mid" placeholder="aa:bb:cc:dd:ee:ff|new-host" required>
-        <div class="hint">Chưa được tồn tại trong hệ thống</div>
+        <label class="form-label">Đến (Machine ID mới) <span class="text-danger">*</span></label>
+        <input name="new_mid" class="form-input" placeholder="aa:bb:cc:dd:ee:ff|new-host" required>
+        <div class="form-hint">Chưa được tồn tại trong hệ thống</div>
       </div>
-      <div class="modal-footer-btns">
-        <button type="button" class="btn-cancel" data-modal-close="transferOverlay">Hủy</button>
-        <button type="submit" class="btn-submit" style="background:#475569">
-          <i class="bi bi-arrow-right me-1"></i>Transfer
-        </button>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-modal-close="transferOverlay">Hủy</button>
+        <button type="submit" class="btn btn-info">↔️ Transfer</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- ── Modal Bulk Renew ─────────────────────────────────────────────────────── -->
+<!-- Bulk renew modal -->
 <div class="overlay" id="bulkRenewOverlay">
-  <div class="modal-box" style="width:420px">
-    <h5><i class="bi bi-calendar-plus" style="color:#0e7490"></i>Gia hạn hàng loạt</h5>
-    <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
-      Gia hạn <strong id="bulkRenewCount">0</strong> máy đã chọn.
-    </p>
-    <div class="preset-row">
+  <div class="modal modal-sm">
+    <div class="modal-title">📅 Gia hạn hàng loạt</div>
+    <p class="text-sm text-muted mb-3">Gia hạn <strong id="bulkRenewCount">0</strong> máy đã chọn.</p>
+    <div class="preset-row mb-3">
       <button type="button" class="preset-btn" onclick="setBulkRenewDays(7)">+7d</button>
       <button type="button" class="preset-btn" onclick="setBulkRenewDays(30)">+30d</button>
       <button type="button" class="preset-btn" onclick="setBulkRenewDays(90)">+90d</button>
@@ -734,353 +407,125 @@
       <button type="button" class="preset-btn" onclick="setBulkRenewDays(365)">+365d</button>
     </div>
     <form method="POST" action="/bulk-renew" id="bulkRenewForm2">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
       <input type="hidden" name="mids" id="bulkRenewMidsInput">
       <div class="form-group">
-        <label>Số ngày gia hạn</label>
-        <input name="days" id="bulkRenewDaysInput" type="number" value="30" min="1" max="3650" required>
+        <label class="form-label">Số ngày</label>
+        <input name="days" id="bulkRenewDaysInput" type="number" value="30" min="1" max="3650" class="form-input" style="width:120px" required>
       </div>
-      <div class="modal-footer-btns">
-        <button type="button" class="btn-cancel" data-modal-close="bulkRenewOverlay">Hủy</button>
-        <button type="submit" class="btn-submit" style="background:#0e7490">
-          <i class="bi bi-check-lg me-1"></i>Gia hạn
-        </button>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-modal-close="bulkRenewOverlay">Hủy</button>
+        <button type="submit" class="btn btn-info">✅ Gia hạn</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- ── Hidden bulk tier form ───────────────────────────────────────────────── -->
+<!-- Bulk tier form -->
 <form method="POST" action="/bulk-tier" id="bulkTierForm" style="display:none">
-  <input type="hidden" name="_csrf" value="<%= csrfToken %>">
   <input type="hidden" name="mids" id="bulkTierMids">
   <input type="hidden" name="tier" id="bulkTierValue">
 </form>
 
 <script>
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Tier selector logic
-  // ═══════════════════════════════════════════════════════════════════════════
-  const tierOpts = document.querySelectorAll('.tier-opt');
-  const trialRow = document.getElementById('trialDaysRow');
-  const maxRow   = document.getElementById('maxPlayersRow');
+// Tier selector
+const tierOpts = document.querySelectorAll('#tierGrid .tier-opt');
+const trialRow = document.getElementById('trialDaysRow');
+const maxRow = document.getElementById('maxPlayersRow');
+function updateTierUI(tier) {
+  tierOpts.forEach(o => o.classList.toggle('selected', o.dataset.tier === tier));
+  if (trialRow) trialRow.style.display = tier === 'trial' ? '' : 'none';
+  if (maxRow) maxRow.style.display = tier === 'unlimited' ? 'none' : '';
+}
+tierOpts.forEach(opt => { opt.addEventListener('click', () => { opt.querySelector('input').checked = true; updateTierUI(opt.dataset.tier); }); });
+updateTierUI('trial');
 
-  function updateTierUI(tier) {
-    tierOpts.forEach(o => o.classList.toggle('selected', o.dataset.tier === tier));
-    trialRow.style.display = tier === 'trial'     ? 'block' : 'none';
-    maxRow.style.display   = tier === 'unlimited' ? 'none'  : 'block';
-  }
-
-  tierOpts.forEach(opt => {
-    opt.addEventListener('click', () => {
-      const tier = opt.dataset.tier;
-      opt.querySelector('input[type=radio]').checked = true;
-      updateTierUI(tier);
-    });
+// Filters
+const machineSearch = document.getElementById('machineSearch');
+const machineStatusFilter = document.getElementById('machineStatusFilter');
+const machineTierFilter = document.getElementById('machineTierFilter');
+const machineVisibleCount = document.getElementById('machineVisibleCount');
+const machineRows = Array.from(document.querySelectorAll('[data-machine-row]'));
+function applyMachineFilters() {
+  const q = (machineSearch?.value || '').trim().toLowerCase();
+  const s = machineStatusFilter?.value || '';
+  const t = machineTierFilter?.value || '';
+  let visible = 0;
+  machineRows.forEach(row => {
+    const show = (!q || (row.dataset.search || '').includes(q)) && (!s || row.dataset.status === s) && (!t || row.dataset.tier === t);
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
   });
+  if (machineVisibleCount) machineVisibleCount.textContent = String(visible);
+  updateBulkBar();
+}
+[machineSearch, machineStatusFilter, machineTierFilter].forEach(el => { if (el) el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', applyMachineFilters); });
 
-  updateTierUI('trial');
+// Bulk
+const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+const bulkBar = document.getElementById('bulkBar');
+const bulkSelectedCount = document.getElementById('bulkSelectedCount');
+const rowCheckboxes = Array.from(document.querySelectorAll('.row-checkbox'));
+function getSelectedMids() { return rowCheckboxes.filter(cb => cb.checked).map(cb => cb.dataset.mid); }
+function updateBulkBar() {
+  const selected = getSelectedMids();
+  const count = selected.length;
+  if (bulkSelectedCount) bulkSelectedCount.textContent = String(count);
+  if (bulkBar) bulkBar.classList.toggle('visible', count > 0);
+  const visibleChecked = rowCheckboxes.filter(cb => cb.checked && cb.closest('tr').style.display !== 'none').length;
+  const visibleTotal = rowCheckboxes.filter(cb => cb.closest('tr').style.display !== 'none').length;
+  if (selectAllCheckbox) { selectAllCheckbox.checked = visibleTotal > 0 && visibleChecked === visibleTotal; selectAllCheckbox.indeterminate = visibleChecked > 0 && visibleChecked < visibleTotal; }
+  ['bulkRevokeMids', 'bulkDeleteMids'].forEach(id => { const el = document.getElementById(id); if (el) el.value = JSON.stringify(selected); });
+}
+if (selectAllCheckbox) selectAllCheckbox.addEventListener('change', () => { const checked = selectAllCheckbox.checked; rowCheckboxes.forEach(cb => { if (cb.closest('tr').style.display !== 'none') cb.checked = checked; }); updateBulkBar(); });
+rowCheckboxes.forEach(cb => cb.addEventListener('change', updateBulkBar));
+function clearBulkSelection() { rowCheckboxes.forEach(cb => cb.checked = false); if (selectAllCheckbox) { selectAllCheckbox.checked = false; selectAllCheckbox.indeterminate = false; } updateBulkBar(); }
+function confirmBulk(action) { const selected = getSelectedMids(); if (!selected.length) return false; return confirm((action === 'revoke' ? 'REVOKE' : 'XÓA') + ' ' + selected.length + ' máy?\n\n' + selected.slice(0,5).join('\n') + (selected.length>5?'\n…và '+(selected.length-5)+' máy khác':'') + '\n\nTiếp tục?'); }
+['bulkRevokeForm','bulkDeleteForm'].forEach(fid => { const f = document.getElementById(fid); if (f) f.addEventListener('submit', function(e) { const s = getSelectedMids(); if (!s.length) { e.preventDefault(); return; } }); });
+function openBulkRenew() { const s = getSelectedMids(); if (!s.length) return; document.getElementById('bulkRenewCount').textContent = String(s.length); document.getElementById('bulkRenewMidsInput').value = JSON.stringify(s); document.getElementById('bulkRenewDaysInput').value = '30'; showOverlay('bulkRenewOverlay'); }
+function setBulkRenewDays(d) { document.getElementById('bulkRenewDaysInput').value = String(d); }
+function submitBulkTier(tier) { if (!tier) return; const s = getSelectedMids(); if (!s.length) { document.getElementById('bulkTierSelect').value = ''; return; } if (!confirm('Đổi ' + s.length + ' máy sang tier ' + tier.toUpperCase() + '?')) { document.getElementById('bulkTierSelect').value = ''; return; } document.getElementById('bulkTierMids').value = JSON.stringify(s); document.getElementById('bulkTierValue').value = tier; document.getElementById('bulkTierForm').submit(); }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Filters
-  // ═══════════════════════════════════════════════════════════════════════════
-  const machineSearch = document.getElementById('machineSearch');
-  const machineStatusFilter = document.getElementById('machineStatusFilter');
-  const machineTierFilter = document.getElementById('machineTierFilter');
-  const machineVisibleCount = document.getElementById('machineVisibleCount');
-  const machineRows = Array.from(document.querySelectorAll('[data-machine-row]'));
-
-  function applyMachineFilters() {
-    const query = (machineSearch?.value || '').trim().toLowerCase();
-    const status = machineStatusFilter?.value || '';
-    const tier = machineTierFilter?.value || '';
-    let visible = 0;
-
-    machineRows.forEach(row => {
-      const matchesQuery = !query || (row.dataset.search || '').includes(query);
-      const matchesStatus = !status || row.dataset.status === status;
-      const matchesTier = !tier || row.dataset.tier === tier;
-      const show = matchesQuery && matchesStatus && matchesTier;
-      row.style.display = show ? '' : 'none';
-      if (show) visible++;
+// Sort
+const tbody = document.querySelector('tbody');
+let currentSort = { col: null, dir: 'asc' };
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.sort;
+    const dir = currentSort.col === col && currentSort.dir === 'asc' ? 'desc' : 'asc';
+    currentSort = { col, dir };
+    document.querySelectorAll('th.sortable').forEach(h => { h.classList.remove('sorted'); const a = h.querySelector('.sort-arrow'); if (a) a.textContent = '↕'; });
+    th.classList.add('sorted'); const a = th.querySelector('.sort-arrow'); if (a) a.textContent = dir === 'asc' ? '▲' : '▼';
+    const rows = Array.from(tbody.querySelectorAll('[data-machine-row]'));
+    const sk = 'data-sort-' + col;
+    rows.sort((a,b) => {
+      let va = a.getAttribute(sk) || '', vb = b.getAttribute(sk) || '';
+      if (col === 'max' || col === 'peak' || col === 'expiry') { va = parseFloat(va); vb = parseFloat(vb); return dir === 'asc' ? va - vb : vb - va; }
+      if (col === 'added') return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+      if (col === 'status') { const o = {online:0,offline:1,zombie:2,expired:3,revoked:4}; va = o[va]??9; vb = o[vb]??9; return dir === 'asc' ? va - vb : vb - va; }
+      if (col === 'tier') { const o = {unlimited:0,pro:1,basic:2,trial:3}; va = o[va]??9; vb = o[vb]??9; return dir === 'asc' ? va - vb : vb - va; }
+      return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
     });
-
-    if (machineVisibleCount) machineVisibleCount.textContent = String(visible);
-  }
-
-  [machineSearch, machineStatusFilter, machineTierFilter].forEach(el => {
-    if (el) el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', applyMachineFilters);
+    rows.forEach(row => tbody.appendChild(row));
   });
+});
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Bulk selection
-  // ═══════════════════════════════════════════════════════════════════════════
-  const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-  const bulkBar = document.getElementById('bulkBar');
-  const bulkSelectedCount = document.getElementById('bulkSelectedCount');
-  const rowCheckboxes = Array.from(document.querySelectorAll('.row-checkbox'));
+// Renew
+function setRenewDays(d) { document.getElementById('renewDaysInput').value = String(d); }
 
-  function getSelectedMids() {
-    return rowCheckboxes.filter(cb => cb.checked).map(cb => cb.dataset.mid);
-  }
+// Plan picker
+const planSel = document.getElementById('planPick');
+if (planSel) { planSel.addEventListener('change', () => { const o = planSel.selectedOptions[0]; if (!o || !o.value) return; const f = document.getElementById('addForm'); const tier = o.dataset.tier; const r = f.querySelector('input[name=tier][value="'+tier+'"]'); if (r) r.checked = true; updateTierUI(tier); if (o.dataset.max) f.querySelector('input[name=max_players]').value = o.dataset.max; if (o.dataset.trial && tier === 'trial') f.querySelector('input[name=trial_days]').value = o.dataset.trial; const ed = parseInt(o.dataset.expdays); if (ed > 0) { const d = new Date(); d.setDate(d.getDate() + ed); f.querySelector('input[name=expires_at]').value = d.toISOString().slice(0,10); } if (o.dataset.note) f.querySelector('input[name=note]').value = o.dataset.note; }); }
 
-  function updateBulkBar() {
-    const selected = getSelectedMids();
-    const count = selected.length;
-    bulkSelectedCount.textContent = String(count);
-    bulkBar.classList.toggle('visible', count > 0);
-
-    // Cập nhật select all state
-    const visibleChecked = rowCheckboxes.filter(cb => cb.checked && cb.closest('tr').style.display !== 'none').length;
-    const visibleTotal = rowCheckboxes.filter(cb => cb.closest('tr').style.display !== 'none').length;
-    selectAllCheckbox.checked = visibleTotal > 0 && visibleChecked === visibleTotal;
-    selectAllCheckbox.indeterminate = visibleChecked > 0 && visibleChecked < visibleTotal;
-
-    // Cập nhật hidden inputs cho bulk forms
-    const midsJson = JSON.stringify(selected);
-    ['bulkRevokeMids', 'bulkDeleteMids'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.value = midsJson;
-    });
-  }
-
-  selectAllCheckbox.addEventListener('change', () => {
-    const checked = selectAllCheckbox.checked;
-    rowCheckboxes.forEach(cb => {
-      if (cb.closest('tr').style.display !== 'none') cb.checked = checked;
-    });
-    updateBulkBar();
-  });
-
-  rowCheckboxes.forEach(cb => {
-    cb.addEventListener('change', updateBulkBar);
-  });
-
-  function clearBulkSelection() {
-    rowCheckboxes.forEach(cb => cb.checked = false);
-    selectAllCheckbox.checked = false;
-    selectAllCheckbox.indeterminate = false;
-    updateBulkBar();
-  }
-
-  function confirmBulk(action) {
-    const selected = getSelectedMids();
-    if (!selected.length) return false;
-    const label = action === 'revoke' ? 'REVOKE' : 'XÓA HOÀN TOÀN';
-    return confirm(label + ' ' + selected.length + ' máy?\n\n' + selected.slice(0, 5).join('\n') + (selected.length > 5 ? '\n…và ' + (selected.length - 5) + ' máy khác' : '') + '\n\nTiếp tục?');
-  }
-
-  // Override bulk revoke/delete form submit để gắn mids
-  ['bulkRevokeForm', 'bulkDeleteForm'].forEach(fid => {
-    const f = document.getElementById(fid);
-    if (f) {
-      f.addEventListener('submit', function(e) {
-        const selected = getSelectedMids();
-        if (!selected.length) { e.preventDefault(); return; }
-        const midsInput = fid === 'bulkRevokeForm'
-          ? document.getElementById('bulkRevokeMids')
-          : document.getElementById('bulkDeleteMids');
-        if (midsInput) midsInput.value = JSON.stringify(selected);
-      });
-    }
-  });
-
-  // Bulk renew modal
-  function openBulkRenew() {
-    const selected = getSelectedMids();
-    if (!selected.length) return;
-    document.getElementById('bulkRenewCount').textContent = String(selected.length);
-    document.getElementById('bulkRenewMidsInput').value = JSON.stringify(selected);
-    document.getElementById('bulkRenewDaysInput').value = '30';
-    showOverlay('bulkRenewOverlay');
-  }
-
-  function setBulkRenewDays(days) {
-    const input = document.getElementById('bulkRenewDaysInput');
-    if (input) input.value = String(days);
-    // Highlight preset
-    document.querySelectorAll('#bulkRenewOverlay .preset-btn').forEach(b => {
-      b.style.borderColor = parseInt(b.textContent) === days ? 'var(--primary)' : 'var(--border)';
-      b.style.color = parseInt(b.textContent) === days ? 'var(--primary)' : 'var(--text)';
-    });
-  }
-
-  // Bulk tier
-  function submitBulkTier(tier) {
-    if (!tier) return;
-    const selected = getSelectedMids();
-    if (!selected.length) { document.getElementById('bulkTierSelect').value = ''; return; }
-    if (!confirm('Đổi ' + selected.length + ' máy sang tier ' + tier.toUpperCase() + '?\n\nTiếp tục?')) {
-      document.getElementById('bulkTierSelect').value = '';
-      return;
-    }
-    document.getElementById('bulkTierMids').value = JSON.stringify(selected);
-    document.getElementById('bulkTierValue').value = tier;
-    document.getElementById('bulkTierForm').submit();
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Sortable columns
-  // ═══════════════════════════════════════════════════════════════════════════
-  const tbody = document.querySelector('tbody');
-  let currentSort = { col: null, dir: 'asc' };
-
-  document.querySelectorAll('th.sortable').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.sort;
-      const dir = currentSort.col === col && currentSort.dir === 'asc' ? 'desc' : 'asc';
-      currentSort = { col, dir };
-
-      // Update sort indicators
-      document.querySelectorAll('th.sortable').forEach(h => {
-        h.classList.remove('sorted');
-        const arrow = h.querySelector('.sort-arrow');
-        if (arrow) arrow.textContent = '↕';
-      });
-      th.classList.add('sorted');
-      const arrow = th.querySelector('.sort-arrow');
-      if (arrow) arrow.textContent = dir === 'asc' ? '▲' : '▼';
-
-      // Sort rows
-      const rows = Array.from(tbody.querySelectorAll('[data-machine-row]'));
-      const sortKey = 'data-sort-' + col;
-      rows.sort((a, b) => {
-        let va = a.getAttribute(sortKey) || '';
-        let vb = b.getAttribute(sortKey) || '';
-        // Numeric sort for max, peak, expiry
-        if (col === 'max' || col === 'peak' || col === 'expiry') {
-          va = parseFloat(va); vb = parseFloat(vb);
-          return dir === 'asc' ? va - vb : vb - va;
-        }
-        // Date sort for added
-        if (col === 'added') {
-          return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-        }
-        // Status priority
-        if (col === 'status') {
-          const order = { online: 0, offline: 1, zombie: 2, expired: 3, revoked: 4 };
-          va = order[va] ?? 9; vb = order[vb] ?? 9;
-          return dir === 'asc' ? va - vb : vb - va;
-        }
-        // Tier priority
-        if (col === 'tier') {
-          const order = { unlimited: 0, pro: 1, basic: 2, trial: 3 };
-          va = order[va] ?? 9; vb = order[vb] ?? 9;
-          return dir === 'asc' ? va - vb : vb - va;
-        }
-        // Default text sort
-        return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-      });
-
-      // Re-append sorted rows
-      rows.forEach(row => tbody.appendChild(row));
-    });
-  });
-
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Renew presets (single machine)
-  // ═══════════════════════════════════════════════════════════════════════════
-  function setRenewDays(days) {
-    const input = document.getElementById('renewDaysInput');
-    if (input) input.value = String(days);
-    // Highlight active preset
-    document.querySelectorAll('#renewOverlay .preset-btn').forEach(b => {
-      b.style.borderColor = parseInt(b.textContent) === days ? 'var(--primary)' : 'var(--border)';
-      b.style.color = parseInt(b.textContent) === days ? 'var(--primary)' : 'var(--text)';
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Plan picker → fill form
-  // ═══════════════════════════════════════════════════════════════════════════
-  const planSel = document.getElementById('planPick');
-  if (planSel) {
-    planSel.addEventListener('change', () => {
-      const opt = planSel.selectedOptions[0];
-      if (!opt || !opt.value) return;
-      const tier = opt.dataset.tier;
-      const form = document.getElementById('addForm');
-      form.querySelector(`input[name=tier][value="${tier}"]`).checked = true;
-      updateTierUI(tier);
-      if (opt.dataset.max)   form.querySelector('input[name=max_players]').value = opt.dataset.max;
-      if (opt.dataset.trial && tier === 'trial')
-        form.querySelector('input[name=trial_days]').value = opt.dataset.trial;
-      const expDays = parseInt(opt.dataset.expdays);
-      if (expDays > 0) {
-        const d = new Date();
-        d.setDate(d.getDate() + expDays);
-        form.querySelector('input[name=expires_at]').value = d.toISOString().slice(0, 10);
-      }
-      if (opt.dataset.note)  form.querySelector('input[name=note]').value = opt.dataset.note;
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Modal helpers
-  // ═══════════════════════════════════════════════════════════════════════════
-  const showOverlay = id => document.getElementById(id)?.classList.add('show');
-  const hideOverlay = id => document.getElementById(id)?.classList.remove('show');
-
-  const machineActions = {
-    renew(btn) {
-      const mid = btn.dataset.mid || '';
-      document.getElementById('renewMid').value = mid;
-      document.getElementById('renewMidLabel').textContent = mid;
-      // Reset presets highlight
-      document.querySelectorAll('#renewOverlay .preset-btn').forEach(b => {
-        b.style.borderColor = 'var(--border)';
-        b.style.color = 'var(--text)';
-      });
-      document.getElementById('renewDaysInput').value = '30';
-      showOverlay('renewOverlay');
-    },
-    key(btn) {
-      const mid = btn.dataset.mid || '';
-      const currentKey = btn.dataset.licenseKey || '';
-      document.getElementById('keyMid').value = mid;
-      document.getElementById('keyMidRemove').value = mid;
-      document.getElementById('keyMidLabel').textContent = mid;
-      const cur = document.getElementById('keyCurrent');
-      cur.textContent = currentKey || '— chưa có key —';
-      cur.style.color = currentKey ? '#a5b4fc' : 'var(--muted)';
-      showOverlay('keyOverlay');
-    },
-    transfer(btn) {
-      const mid = btn.dataset.mid || '';
-      document.getElementById('transferOldMid').value = mid;
-      document.getElementById('transferOldLabel').textContent = mid;
-      showOverlay('transferOverlay');
-    },
-  };
-
-  document.addEventListener('click', event => {
-    const actionBtn = event.target.closest('[data-machine-action]');
-    if (actionBtn) {
-      event.preventDefault();
-      const handler = machineActions[actionBtn.dataset.machineAction];
-      if (handler) handler(actionBtn);
-      return;
-    }
-
-    const opener = event.target.closest('[data-modal-open]');
-    if (opener) {
-      event.preventDefault();
-      showOverlay(opener.dataset.modalOpen);
-      return;
-    }
-
-    const closer = event.target.closest('[data-modal-close]');
-    if (closer) {
-      event.preventDefault();
-      hideOverlay(closer.dataset.modalClose);
-    }
-  });
-
-  document.querySelectorAll('.overlay').forEach(ov => {
-    ov.addEventListener('click', e => { if (e.target === ov) hideOverlay(ov.id); });
-  });
-
+// Action handlers
+const machineActions = {
+  renew(btn) { document.getElementById('renewMid').value = btn.dataset.mid||''; document.getElementById('renewMidLabel').textContent = btn.dataset.mid||''; document.getElementById('renewDaysInput').value = '30'; showOverlay('renewOverlay'); },
+  key(btn) { const m = btn.dataset.mid||''; document.getElementById('keyMid').value = m; document.getElementById('keyMidRemove').value = m; document.getElementById('keyMidLabel').textContent = m; const cur = document.getElementById('keyCurrent'); const k = btn.dataset.licenseKey||''; cur.textContent = k || '— chưa có key —'; cur.style.color = k ? '#a5b4fc' : ''; showOverlay('keyOverlay'); },
+  transfer(btn) { document.getElementById('transferOldMid').value = btn.dataset.mid||''; document.getElementById('transferOldLabel').textContent = btn.dataset.mid||''; showOverlay('transferOverlay'); },
+};
+document.addEventListener('click', event => {
+  const btn = event.target.closest('[data-machine-action]');
+  if (btn) { event.preventDefault(); const h = machineActions[btn.dataset.machineAction]; if (h) h(btn); }
+});
 </script>
 </body>
 </html>

@@ -4,270 +4,135 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Operations — License Manager</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-  <style>
-    :root { --bg:#111827; --surface:#1f2937; --panel:#161e2e; --border:#374151; --text:#f9fafb; --muted:#9ca3af; --primary:#6366f1; }
-    * { box-sizing: border-box; }
-    body { background: radial-gradient(circle at top left, #172033 0, var(--bg) 34%); color: var(--text); font-family: 'Segoe UI', sans-serif; margin:0; min-height:100vh; }
-    .topbar { background: var(--surface); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; position:sticky; top:0; z-index:20; }
-    .topbar-brand { font-weight:700; font-size:1.1rem; display:flex; align-items:center; gap:8px; }
-    .topbar-brand i { color:var(--primary); font-size:1.3rem; }
-    .nav-btns { overflow-x:auto; max-width:100%; padding-bottom:2px; }
-    .nav-btns a { color:#d1d5db; text-decoration:none; padding:6px 14px; border-radius:6px; font-size:.875rem; transition:background .15s; }
-    .nav-btns a:hover { background:var(--border); color:#fff; }
-    .nav-btns a.active { background:var(--primary); color:#fff; }
-    .nav-btns a.btn-logout { color:#f87171; border:1px solid #f87171; }
-    .page { padding:24px; max-width:1280px; margin:0 auto; }
-    .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:18px; flex-wrap:wrap; }
-    .eyebrow { color:#93c5fd; font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
-    .page-title { margin:0; font-size:1.35rem; font-weight:800; }
-    .page-sub { margin-top:6px; color:var(--muted); font-size:.875rem; }
-    .actions { display:flex; gap:8px; flex-wrap:wrap; }
-    .btn-linkish { border:1px solid var(--border); color:#d1d5db; text-decoration:none; padding:8px 12px; border-radius:8px; font-size:.82rem; display:inline-flex; align-items:center; gap:6px; background:rgba(22,30,46,.7); }
-    .btn-linkish:hover { background:var(--border); color:#fff; }
-    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
-    .cardx { background:rgba(31,41,55,.92); border:1px solid var(--border); border-radius:8px; padding:16px; min-width:0; }
-    .label { color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; font-weight:700; margin-bottom:8px; }
-    .value { font-size:1.35rem; font-weight:800; overflow-wrap:anywhere; }
-    .value code, code { background:var(--panel); color:#a5b4fc; padding:2px 6px; border-radius:4px; font-size:.82rem; overflow-wrap:anywhere; }
-    .sub { margin-top:6px; color:var(--muted); font-size:.78rem; overflow-wrap:anywhere; }
-    .status { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:4px 10px; font-size:.78rem; font-weight:800; }
-    .status-ok { background:#064e3b; color:#34d399; }
-    .status-muted { background:#374151; color:#d1d5db; }
-    .section { background:rgba(31,41,55,.92); border:1px solid var(--border); border-radius:8px; padding:18px; margin-bottom:16px; }
-    .section-title { display:flex; align-items:center; gap:8px; font-weight:800; margin-bottom:14px; }
-    .runtime-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-    .rowitem { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; min-width:0; }
-    .deploy-steps { display:grid; gap:10px; margin-top:12px; }
-    .deploy-step { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .deploy-step-head { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
-    .deploy-log { margin:10px 0 0; max-height:150px; overflow:auto; white-space:pre-wrap; color:#d1d5db; font-size:.78rem; background:#0f172a; border:1px solid var(--border); border-radius:6px; padding:10px; }
-    .deploy-form { margin:0; }
-    @media (max-width: 900px) { .grid, .runtime-grid { grid-template-columns:1fr 1fr; } }
-    @media (max-width: 560px) { .grid, .runtime-grid { grid-template-columns:1fr; } .page { padding:18px; } }
-  </style>
 </head>
 <body>
-<div class="topbar">
-  <div class="topbar-brand"><i class="bi bi-shield-lock-fill"></i>License Manager</div>
-  <div class="nav-btns d-flex gap-1">
-    <a href="/">Dashboard</a>
-    <a href="/machines">Machines</a>
-    <a href="/plans">Plans</a>
-    <a href="/operations" class="active">Operations</a>
-    <a href="/logs">Logs</a>
-    <a href="/settings">Settings</a>
-    <a href="/logout" class="btn-logout">Logout</a>
-  </div>
-</div>
-
+<%- include('partials/topbar', { activePage: 'operations' }) %>
 <div class="page">
-  <%- include('partials/flash-toast', { flash: flash }) %>
+
+  <% if (typeof flash !== 'undefined' && flash) { %>
+  <div class="alert alert-<%= flash.type %>">
+    <% if (flash.type === 'success') { %>✅<% } else { %>⚠️<% } %>
+    <span><%= flash.msg %></span>
+    <button class="alert-close" onclick="this.parentElement.remove()">×</button>
+  </div>
+  <% } %>
 
   <div class="page-head">
     <div>
-      <div class="eyebrow">Vận hành runtime</div>
+      <div class="page-eyebrow">Runtime operations</div>
       <h1 class="page-title">Trung tâm vận hành</h1>
-      <div class="page-sub">PM2, sức khỏe tiến trình, lưu trữ và backup ở cùng một nơi.</div>
+      <p class="page-sub">PM2, sức khỏe tiến trình, backup và Git deploy.</p>
     </div>
-    <div class="actions">
-      <form class="deploy-form" method="POST" action="/operations/update" onsubmit="return confirm('Cập nhật code từ Git và restart PM2 ngay bây giờ?')">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
-          <i class="bi bi-cloud-arrow-down"></i>Cập nhật từ Git
-        </button>
+    <div class="flex gap-2 flex-wrap">
+      <form method="POST" action="/operations/update" onsubmit="return confirm('Cập nhật code từ Git và restart PM2?')" style="display:inline">
+        <button class="btn btn-primary btn-sm" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>📥 Git Pull + Restart</button>
       </form>
-      <form class="deploy-form" method="POST" action="/operations/check-update">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
-          <i class="bi bi-search"></i>Kiểm tra update
-        </button>
+      <form method="POST" action="/operations/check-update" style="display:inline">
+        <button class="btn btn-outline btn-sm" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>🔍 Check Update</button>
       </form>
-      <form class="deploy-form" method="POST" action="/operations/restart" onsubmit="return confirm('Restart PM2 mà không chạy git pull?')">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
-          <i class="bi bi-arrow-repeat"></i>Restart PM2
-        </button>
+      <form method="POST" action="/operations/restart" onsubmit="return confirm('Restart PM2 mà không git pull?')" style="display:inline">
+        <button class="btn btn-outline btn-sm" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>🔄 Restart PM2</button>
       </form>
-      <form class="deploy-form" method="POST" action="/operations/rollback" onsubmit="return confirm('Rollback về commit trước lần cập nhật thành công gần nhất?')">
-        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-        <button class="btn-linkish" type="submit" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>
-          <i class="bi bi-arrow-counterclockwise"></i>Rollback
-        </button>
+      <form method="POST" action="/operations/rollback" onsubmit="return confirm('Rollback về commit trước?')" style="display:inline">
+        <button class="btn btn-outline btn-sm" <%= deployStatus && deployStatus.running ? 'disabled' : '' %>>⏪ Rollback</button>
       </form>
-      <a class="btn-linkish" href="/health" target="_blank"><i class="bi bi-heart-pulse"></i>Health JSON</a>
-      <a class="btn-linkish" href="/logs"><i class="bi bi-terminal"></i>Logs</a>
-      <a class="btn-linkish" href="/settings"><i class="bi bi-sliders"></i>Settings</a>
+      <a href="/health" target="_blank" class="btn btn-outline btn-sm">💚 Health</a>
     </div>
   </div>
 
-  <section class="grid">
-    <div class="cardx">
-      <div class="label">PM2</div>
-      <div class="value">
-        <% if (runtime.pm2 && runtime.pm2.enabled) { %>
-          <span class="status status-ok"><i class="bi bi-check-circle-fill"></i>Online</span>
-        <% } else { %>
-          <span class="status status-muted"><i class="bi bi-dash-circle"></i>Not PM2</span>
-        <% } %>
+  <!-- Status grid -->
+  <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
+    <div class="stat-card" style="--accent:#22c55e">
+      <div class="stat-label">PM2</div>
+      <div class="stat-value text-sm" style="font-size:.9rem">
+        <% if (runtime.pm2 && runtime.pm2.enabled) { %><span class="badge badge-success">Online</span>
+        <% } else { %><span class="badge badge-muted">Not PM2</span><% } %>
       </div>
-      <div class="sub"><%= runtime.pm2 && runtime.pm2.name ? runtime.pm2.name : 'Chạy npm run pm2:start để gắn vào PM2' %></div>
+      <div class="stat-sub"><%= runtime.pm2 && runtime.pm2.name ? runtime.pm2.name : 'npm run pm2:start' %></div>
     </div>
-    <div class="cardx">
-      <div class="label">Process uptime</div>
-      <div class="value"><%= Math.floor(processInfo.uptime / 60) %>m</div>
-      <div class="sub">PID <code><%= processInfo.pid %></code> · <%= processInfo.node %></div>
+    <div class="stat-card" style="--accent:#6366f1">
+      <div class="stat-label">Process Uptime</div>
+      <div class="stat-value" style="font-size:1.5rem"><%= Math.floor(processInfo.uptime / 60) %>m</div>
+      <div class="stat-sub">PID <code><%= processInfo.pid %></code> · <%= processInfo.node %></div>
     </div>
-    <div class="cardx">
-      <div class="label">Memory</div>
-      <div class="value"><%= processInfo.rssMb %> MB</div>
-      <div class="sub">Heap used <%= processInfo.heapUsedMb %> MB</div>
+    <div class="stat-card" style="--accent:#f59e0b">
+      <div class="stat-label">Memory</div>
+      <div class="stat-value" style="font-size:1.5rem"><%= processInfo.rssMb %> MB</div>
+      <div class="stat-sub">Heap: <%= processInfo.heapUsedMb %> MB</div>
     </div>
-    <div class="cardx">
-      <div class="label">Backups</div>
-      <div class="value"><%= backupInfo.count %></div>
-      <div class="sub">Mới nhất: <%= backupInfo.latest || 'chưa có' %></div>
+    <div class="stat-card" style="--accent:#8b5cf6">
+      <div class="stat-label">Backups</div>
+      <div class="stat-value" style="font-size:1.5rem"><%= backupInfo.count %></div>
+      <div class="stat-sub">Mới nhất: <%= backupInfo.latest || '—' %></div>
     </div>
-  </section>
+  </div>
 
-  <section class="section">
-    <div class="section-title"><i class="bi bi-diagram-3"></i>Endpoint runtime</div>
-    <div class="runtime-grid">
-      <div class="rowitem">
-        <div class="label">Web UI</div>
-        <div class="value"><code><%= webUrl %></code></div>
-      </div>
-      <div class="rowitem">
-        <div class="label">TCP license</div>
-        <div class="value"><code><%= tcpAddress %></code></div>
-      </div>
-      <div class="rowitem">
-        <div class="label">Data dir</div>
-        <div class="value"><code><%= dataDir %></code></div>
-        <div class="sub">Source: <%= dataDirSource %></div>
-      </div>
-      <div class="rowitem">
-        <div class="label">Backup dir</div>
-        <div class="value"><code><%= backupInfo.dir %></code></div>
-      </div>
+  <!-- Endpoints -->
+  <div class="section">
+    <div class="section-title">📡 Endpoints</div>
+    <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)">
+      <div class="stat-card" style="--accent:#6366f1"><div class="stat-label">Web UI</div><div class="stat-value text-sm font-mono" style="font-size:.85rem"><%= webUrl %></div></div>
+      <div class="stat-card" style="--accent:#22c55e"><div class="stat-label">TCP License</div><div class="stat-value text-sm font-mono" style="font-size:.85rem"><%= tcpAddress %></div></div>
+      <div class="stat-card" style="--accent:#f59e0b"><div class="stat-label">Data Dir</div><div class="stat-value text-sm font-mono" style="font-size:.78rem"><%= dataDir %></div><div class="stat-sub">Source: <%= dataDirSource %></div></div>
+      <div class="stat-card" style="--accent:#8b5cf6"><div class="stat-label">Backup Dir</div><div class="stat-value text-sm font-mono" style="font-size:.78rem"><%= backupInfo.dir %></div></div>
     </div>
-  </section>
+  </div>
 
-  <section class="section">
-    <div class="section-title"><i class="bi bi-server"></i>Tiến trình host</div>
-    <div class="runtime-grid">
-      <div class="rowitem">
-        <div class="label">Platform</div>
-        <div class="value"><code><%= processInfo.platform %></code></div>
-      </div>
-      <div class="rowitem">
-        <div class="label">Environment</div>
-        <div class="value"><code><%= runtime.nodeEnv %></code></div>
-      </div>
+  <!-- Host info -->
+  <div class="section">
+    <div class="section-title">🖥 Host</div>
+    <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)">
+      <div class="stat-card" style="--accent:#6366f1"><div class="stat-label">Platform</div><div class="stat-value text-sm" style="font-size:.9rem"><code><%= processInfo.platform %></code></div></div>
+      <div class="stat-card" style="--accent:#22c55e"><div class="stat-label">Environment</div><div class="stat-value text-sm" style="font-size:.9rem"><code><%= runtime.nodeEnv %></code></div></div>
     </div>
-  </section>
+  </div>
 
-  <section class="section">
-    <div class="section-title"><i class="bi bi-cloud-arrow-down"></i>Cập nhật từ Git</div>
-    <div class="runtime-grid">
-      <div class="rowitem">
-        <div class="label">Trạng thái</div>
-        <% if (deployStatus && deployStatus.running) { %>
-          <div class="value"><span class="status status-muted"><i class="bi bi-arrow-repeat"></i>Đang chạy</span></div>
-          <div class="sub">Vui lòng chờ tiến trình hiện tại hoàn tất.</div>
-        <% } else if (deployStatus && deployStatus.last) { %>
-          <div class="value">
-            <% if (deployStatus.last.ok) { %>
-              <span class="status status-ok"><i class="bi bi-check-circle-fill"></i>Thành công</span>
-            <% } else { %>
-              <span class="status status-muted"><i class="bi bi-exclamation-triangle"></i>Có lỗi</span>
-            <% } %>
+  <!-- Git Deploy -->
+  <div class="section">
+    <div class="section-title">📥 Git Deploy</div>
+    <% if (deployStatus && deployStatus.running) { %>
+      <div class="alert alert-info">🔄 Đang chạy tiến trình deploy, vui lòng chờ...</div>
+    <% } else if (deployStatus && deployStatus.last) { %>
+      <div class="<%= deployStatus.last.ok ? 'alert alert-success' : 'alert alert-danger' %>">
+        <%= deployStatus.last.ok ? '✅' : '❌' %>
+        <span>Lần cuối: <%= deployStatus.last.ok ? 'Thành công' : 'Có lỗi' %> — <%= new Date(deployStatus.last.finishedAt || deployStatus.last.startedAt).toLocaleString('vi-VN') %></span>
+      </div>
+      <% if (deployStatus.last.beforeCommit || deployStatus.last.afterCommit) { %>
+      <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)">
+        <div class="stat-card" style="--accent:#f59e0b"><div class="stat-label">Commit trước</div><div class="stat-value text-sm font-mono" style="font-size:.78rem"><%= deployStatus.last.beforeCommit || 'n/a' %></div></div>
+        <div class="stat-card" style="--accent:#22c55e"><div class="stat-label">Commit sau</div><div class="stat-value text-sm font-mono" style="font-size:.78rem"><%= deployStatus.last.afterCommit || 'n/a' %></div><div class="stat-sub"><%= deployStatus.last.gitSummary || '' %></div></div>
+      </div>
+      <% } %>
+      <% if (deployStatus.last.steps && deployStatus.last.steps.length) { %>
+        <div style="display:grid;gap:8px;margin-top:12px">
+        <% deployStatus.last.steps.forEach(function(step) { %>
+          <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+            <div class="flex items-center justify-between mb-2"><strong class="text-sm"><%= step.name %></strong><span class="badge <%= step.code===0?'badge-success':'badge-danger' %>">exit <%= step.code %></span></div>
+            <div class="text-xs text-muted mb-2"><code><%= step.command %></code></div>
+            <% if (step.stdout || step.stderr) { %><pre style="background:#0f1723;border:1px solid var(--border);border-radius:6px;padding:10px;max-height:150px;overflow:auto;white-space:pre-wrap;color:#d1d5db;font-size:.74rem;margin:0"><%= (step.stdout||step.stderr).slice(-4000) %></pre><% } %>
           </div>
-          <div class="sub">Lần cuối: <%= new Date(deployStatus.last.finishedAt || deployStatus.last.startedAt).toLocaleString('vi-VN') %></div>
-        <% } else { %>
-          <div class="value"><span class="status status-muted"><i class="bi bi-clock"></i>Chưa chạy</span></div>
-          <div class="sub">Cập nhật Git chạy <code>git pull --ff-only</code> rồi <code>pm2 restart all --update-env</code>.</div>
-        <% } %>
-      </div>
-      <div class="rowitem">
-        <div class="label">Lưu ý</div>
-        <div class="value"><code>Không chạy npm install</code></div>
-        <div class="sub">Nếu sau này có thay đổi dependency, nên cập nhật thủ công hoặc bật thêm chế độ cài dependency có xác nhận.</div>
-      </div>
-      <% if (deployStatus && deployStatus.last && (deployStatus.last.beforeCommit || deployStatus.last.afterCommit || deployStatus.last.localCommit || deployStatus.last.remoteCommit)) { %>
-        <div class="rowitem">
-          <div class="label">Commit trước</div>
-          <div class="value"><code><%= deployStatus.last.beforeCommit || deployStatus.last.localCommit || 'n/a' %></code></div>
-          <div class="sub">Commit local trước thao tác.</div>
-        </div>
-        <div class="rowitem">
-          <div class="label">Commit sau</div>
-          <div class="value"><code><%= deployStatus.last.afterCommit || deployStatus.last.remoteCommit || 'n/a' %></code></div>
-          <div class="sub"><%= deployStatus.last.gitSummary || deployStatus.last.remoteLog || 'Chưa có log commit.' %></div>
+        <% }) %>
         </div>
       <% } %>
-    </div>
-    <% if (deployStatus && deployStatus.last && deployStatus.last.steps && deployStatus.last.steps.length) { %>
-      <div class="deploy-steps">
-        <% deployStatus.last.steps.forEach(step => { %>
-          <div class="deploy-step">
-            <div class="deploy-step-head">
-              <strong><%= step.name %></strong>
-              <span class="status <%= step.code === 0 ? 'status-ok' : 'status-muted' %>">exit <%= step.code %></span>
-            </div>
-            <div class="sub"><code><%= step.command %></code></div>
-            <% if (step.stdout || step.stderr) { %>
-              <pre class="deploy-log"><%= (step.stdout || step.stderr).slice(-4000) %></pre>
-            <% } %>
-          </div>
-        <% }) %>
-      </div>
-    <% } %>
-    <% if (deployStatus && deployStatus.lastCheck) { %>
-      <div class="deploy-steps">
-        <div class="deploy-step">
-          <div class="deploy-step-head">
-            <strong>Kết quả kiểm tra update</strong>
-            <% if (deployStatus.lastCheck.updateAvailable) { %>
-              <span class="status status-muted">Có update</span>
-            <% } else { %>
-              <span class="status status-ok">Mới nhất</span>
-            <% } %>
-          </div>
-          <div class="sub">Local <code><%= deployStatus.lastCheck.localCommit || 'n/a' %></code> · Remote <code><%= deployStatus.lastCheck.remoteCommit || 'n/a' %></code></div>
-          <% if (deployStatus.lastCheck.remoteLog) { %>
-            <pre class="deploy-log"><%= deployStatus.lastCheck.remoteLog.slice(-4000) %></pre>
-          <% } %>
-        </div>
-      </div>
+    <% } else { %>
+      <p class="text-sm text-muted">Chưa có lịch sử deploy. Nhấn "Git Pull + Restart" để cập nhật lần đầu.</p>
     <% } %>
     <% if (deployStatus && deployStatus.history && deployStatus.history.length) { %>
-      <div class="deploy-steps">
-        <div class="section-title"><i class="bi bi-clock-history"></i>Lịch sử cập nhật</div>
-        <% deployStatus.history.slice(0, 10).forEach(item => { %>
-          <div class="deploy-step">
-            <div class="deploy-step-head">
-              <strong><%= item.type === 'rollback' ? 'Rollback' : (item.type === 'restart' ? 'Restart PM2' : 'Cập nhật từ Git') %></strong>
-              <span class="status <%= item.ok ? 'status-ok' : 'status-muted' %>"><%= item.ok ? 'OK' : 'Lỗi' %></span>
-            </div>
-            <div class="sub">
-              <%= item.finishedAt ? new Date(item.finishedAt).toLocaleString('vi-VN') : '' %>
-              <% if (item.beforeCommit || item.afterCommit) { %>
-                · <code><%= item.beforeCommit || 'n/a' %></code> → <code><%= item.afterCommit || 'n/a' %></code>
-              <% } %>
-              <% if (item.rollbackTo) { %>
-                · về <code><%= item.rollbackTo %></code>
-              <% } %>
-            </div>
-            <% if (item.gitSummary) { %>
-              <div class="sub"><%= item.gitSummary %></div>
-            <% } %>
-          </div>
-        <% }) %>
+    <div class="divider"><span>Lịch sử deploy (10 gần nhất)</span></div>
+    <div style="display:grid;gap:6px">
+    <% deployStatus.history.slice(0,10).forEach(function(item) { %>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div>
+          <strong class="text-sm"><%= item.type==='rollback'?'Rollback':item.type==='restart'?'Restart':'Git Update' %></strong>
+          <% if (item.beforeCommit) { %><span class="text-xs text-muted"> · <code><%= item.beforeCommit.slice(0,7) %></code> → <code><%= (item.afterCommit||'').slice(0,7) %></code></span><% } %>
+        </div>
+        <span class="badge <%= item.ok?'badge-success':'badge-danger' %>"><%= item.ok?'OK':'Lỗi' %></span>
       </div>
+    <% }) %>
+    </div>
     <% } %>
-  </section>
+  </div>
 </div>
 </body>
 </html>
