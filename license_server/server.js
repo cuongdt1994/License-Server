@@ -1,5 +1,5 @@
 'use strict';
-const net       = require('net');
+const tls       = require('tls');
 const http      = require('http');
 const https     = require('https');
 const crypto    = require('crypto');
@@ -12,8 +12,7 @@ const speakeasy = require('speakeasy');
 const QRCode    = require('qrcode');
 const { resolveDataDirInfo, rememberDataDir } = require('./data_dir');
 const { buildRuntimeConfig } = require('./runtime_config');
-const { ensureRuntimeSecrets } = require('./runtime_secrets');
-const { FileSessionStore } = require('./session_store');
+const { SqliteSessionStore } = require('./session_store');
 const {
     ensureCsrfToken,
     verifyCsrfRequest,
@@ -41,8 +40,6 @@ const {
     appendAuditLine,
     verifyAuditChain,
     migrateAuditChainIfNeeded,
-    updateChecksum,
-    verifyAllChecksums,
 } = require('./security');
 const agent     = require('./agent_manager');
 const commandPolicy = require('./command_policy');
@@ -56,7 +53,37 @@ const WEB_PORT        = RUNTIME.webPort;
 const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
-const RUNTIME_SECRETS = ensureRuntimeSecrets({ dataDir: DATA_DIR });
+const SESSION_SECRET  = String(process.env.LICENSE_SESSION_SECRET || '').trim();
+if (Buffer.byteLength(SESSION_SECRET, 'utf8') < 48) {
+    throw new Error('LICENSE_SESSION_SECRET is required and must be at least 48 bytes; runtime JSON secrets are disabled.');
+}
+const RUNTIME_SECRETS = {
+    sessionSecret: SESSION_SECRET,
+    tcpSecret: process.env.LICENSE_TCP_SECRET || '',
+    sources: { session: 'env', tcp: process.env.LICENSE_TCP_SECRET ? 'env' : 'embedded-client-sync' },
+    file: null,
+};
+
+// TLS-only license transport. Port 27015 is no longer a raw TCP listener.
+const TLS_PORT = clampEnvPort(process.env.LICENSE_TLS_PORT, TCP_PORT);
+if (TLS_PORT !== TCP_PORT) {
+    throw new Error(`LICENSE_TLS_PORT (${TLS_PORT}) must equal TCP_PORT (${TCP_PORT}); raw TCP has been removed.`);
+}
+const TLS_KEY_FILE = String(process.env.LICENSE_TLS_KEY_FILE || '').trim();
+const TLS_CERT_FILE = String(process.env.LICENSE_TLS_CERT_FILE || '').trim();
+const TLS_CA_FILE = String(process.env.LICENSE_TLS_CA_FILE || '').trim();
+const TLS_MIN_VERSION = String(process.env.LICENSE_TLS_MIN_VERSION || 'TLSv1.2').trim();
+const TLS_HANDSHAKE_TIMEOUT_MS = clampEnvInt(process.env.LICENSE_TLS_HANDSHAKE_TIMEOUT_MS, 5000, 1000, 30000);
+const TLS_MTLS = process.env.LICENSE_TLS_MTLS === '1';
+
+function clampEnvInt(value, fallback, min, max) {
+    const n = Number.parseInt(value, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+function clampEnvPort(value, fallback) {
+    return clampEnvInt(value, fallback, 1, 65535);
+}
 
 // TCP secret dùng chung với license_check.cpp. Mặc định server dùng cùng 2 XOR-shares
 // với client để tránh lệch key khi runtime_secret được sinh khác môi trường. Nếu cần
@@ -106,17 +133,10 @@ function resolveTcpSecret(runtimeSecret) {
 }
 const TCP_SECRET_INFO = resolveTcpSecret(RUNTIME_SECRETS.tcpSecret);
 const SECRET_KEY      = TCP_SECRET_INFO.key;
-const DB_FILE         = path.join(DATA_DIR, 'whitelist.json');
-const BAN_FILE        = path.join(DATA_DIR, 'bans.json');
 const LOG_FILE        = path.join(DATA_DIR, 'license.log');
 const AUDIT_FILE      = path.join(DATA_DIR, 'audit.log');
-const STATS_FILE      = path.join(DATA_DIR, 'stats.json');
-const HISTORY_FILE    = path.join(DATA_DIR, 'history.json');
-const PLANS_FILE      = path.join(DATA_DIR, 'plans.json');
-const SETTINGS_FILE   = path.join(DATA_DIR, 'settings.json');
-const ADMIN_FILE      = path.join(DATA_DIR, 'admin.json');
+const SQLITE_FILE     = path.join(DATA_DIR, 'license.sqlite3');
 const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
-const SESSION_DIR     = path.join(DATA_DIR, 'sessions');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 RUNTIME.tcpSecretSource = TCP_SECRET_INFO.source;
@@ -329,7 +349,6 @@ function saveJsonPrivate(file, data, pretty = true) {
 }
 function saveBans(b) {
     getStore().saveBans(b || {});
-    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, BAN_FILE);
 }
 function normalizeIp(ip) {
     let v = String(ip || '?').trim();
@@ -398,15 +417,15 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 
-// ── Store adapter (JSON default, SQLite optional) ─────────────────────────────
+// ── SQLite store (mandatory; no JSON fallback) ───────────────────────────────
 let _storeInstance = null;
 function getStore() {
     if (_storeInstance) return _storeInstance;
     _storeInstance = createStore({
-        driver: process.env.LICENSE_DB_DRIVER || 'json',
+        driver: 'sqlite',
         dataDir: DATA_DIR,
+        dbPath: SQLITE_FILE,
         log: (level, msg) => log(level || 'INFO', msg),
-        fallbackToJson: process.env.LICENSE_DB_SQLITE_STRICT !== '1',
     });
     return _storeInstance;
 }
@@ -434,7 +453,11 @@ const METRIC_DEFS = {
     license_tcp_hb2_deny_total: ['counter', 'HB2 denials.'],
     license_tcp_decrypt_fail_total: ['counter', 'TCP AES-GCM decrypt or frame validation failures.'],
     license_tcp_replay_fail_total: ['counter', 'TCP timestamp/nonce replay failures.'],
-    license_tcp_rate_limited_total: ['counter', 'TCP requests rejected by rate or concurrency limits.'],
+    license_tcp_rate_limited_total: ['counter', 'TLS license requests rejected by rate or concurrency limits.'],
+    license_tls_connections: ['gauge', 'Current established TLS license connections.'],
+    license_tls_handshake_ok_total: ['counter', 'Successful TLS handshakes.'],
+    license_tls_handshake_fail_total: ['counter', 'Failed TLS handshakes.'],
+    license_graceful_shutdown_total: ['counter', 'Graceful shutdowns initiated.'],
     license_db_save_total: ['counter', 'Store save operations.'],
     license_db_save_fail_total: ['counter', 'Store save failures.'],
     license_process_uptime_seconds: ['gauge', 'Node.js process uptime in seconds.'],
@@ -459,6 +482,7 @@ function collectDynamicMetrics() {
     } catch {}
     setMetric('license_sse_clients', sseClientCount());
     setMetric('license_sessions_active', sessions.size);
+    setMetric('license_tls_connections', typeof _tlsConnections !== 'undefined' ? _tlsConnections.size : 0);
     try {
         const health = getStore().health ? getStore().health() : {};
         if (Number.isFinite(Number(health.saves_total))) setMetric('license_db_save_total', health.saves_total);
@@ -490,17 +514,16 @@ function loadAdminCredentials() {
         }
         return { user: envUser, pass_hash: hashPassword(envPass), source: 'env' };
     }
-    if (fs.existsSync(ADMIN_FILE)) {
-        try {
-            const raw = JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8'));
-            const normalized = normalizeAdminCredentials(raw);
-            if (normalized) {
-                if (raw.pass || raw.pass_hash !== normalized.pass_hash) {
-                    writeFilePrivateAtomic(ADMIN_FILE, JSON.stringify(normalized, null, 2) + '\n');
-                }
-                return normalized;
-            }
-        } catch {}
+    try {
+        const raw = getStore().loadAdminCredentials();
+        const normalized = normalizeAdminCredentials(raw);
+        if (normalized) {
+            if (raw.pass || raw.pass_hash !== normalized.pass_hash) getStore().saveAdminCredentials(normalized);
+            return normalized;
+        }
+    } catch (err) {
+        log('ERROR', `Cannot load admin credentials from SQLite: ${err.message}`);
+        throw err;
     }
     return null;
 }
@@ -534,7 +557,6 @@ function loadDB() {
 }
 function saveDB(db) {
     getStore().saveDB(db || {});
-    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, DB_FILE);
 }
 function now() { return new Date().toLocaleString('sv').replace('T', ' '); }
 
@@ -544,7 +566,6 @@ function loadSettings() {
 }
 function saveSettings(s) {
     getStore().saveSettings(s || {});
-    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
 }
 
 // ── Plans ─────────────────────────────────────────────────────────────────────
@@ -553,7 +574,6 @@ function loadPlans() {
 }
 function savePlans(p) {
     getStore().savePlans(Array.isArray(p) ? p : []);
-    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, PLANS_FILE);
 }
 
 // ── Stats (time-series) ───────────────────────────────────────────────────────
@@ -691,24 +711,32 @@ function isMaintenanceActive() {
     return true;
 }
 
-// ── Backup ────────────────────────────────────────────────────────────────────
+// ── SQLite online backup ─────────────────────────────────────────────────────
 let _lastBackupDate = '';
-function doBackup() {
+let _backupInFlight = null;
+async function doBackup(force = false) {
     const today = new Date().toISOString().slice(0, 10);
-    if (_lastBackupDate === today) return;
-    _lastBackupDate = today;
-    if (!fs.existsSync(DB_FILE)) return;
-    const dest = path.join(BACKUP_DIR, `whitelist_${today}.json`);
-    fs.copyFileSync(DB_FILE, dest);
-    // Keep last 30 backups
-    const list = fs.readdirSync(BACKUP_DIR)
-        .filter(f => f.startsWith('whitelist_') && f.endsWith('.json'))
-        .sort();
-    while (list.length > 30) fs.unlinkSync(path.join(BACKUP_DIR, list.shift()));
-    log('INFO', `Backup → ${dest}`);
+    if (!force && _lastBackupDate === today) return null;
+    if (_backupInFlight) return _backupInFlight;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dest = path.join(BACKUP_DIR, `license_${stamp}.sqlite3`);
+    _backupInFlight = getStore().backup(dest)
+        .then(() => {
+            _lastBackupDate = today;
+            const list = fs.readdirSync(BACKUP_DIR)
+                .filter(name => name.startsWith('license_') && name.endsWith('.sqlite3'))
+                .sort();
+            while (list.length > 30) fs.unlinkSync(path.join(BACKUP_DIR, list.shift()));
+            log('INFO', `SQLite backup complete → ${dest}`);
+            return dest;
+        })
+        .catch(err => {
+            log('ERROR', `SQLite backup failed: ${err.message}`);
+            throw err;
+        })
+        .finally(() => { _backupInFlight = null; });
+    return _backupInFlight;
 }
-
-const CHECKSUM_FILE   = path.join(DATA_DIR, '.checksums.json');
 
 // ── Active servers map ────────────────────────────────────────────────────────
 const active = {};
@@ -746,6 +774,22 @@ function makeToken(mid, maxPl) {
 const SESSION_LIFETIME_MS = clampInt(process.env.LICENSE_SESSION_TTL_MS, 10 * 60 * 1000, 1000, 24 * 60 * 60 * 1000);
 const sessions = new Map(); // session_id -> session state; token stored as hash only
 
+function restorePersistedSessions() {
+    const nowMs = Date.now();
+    let restored = 0;
+    for (const state of getStore().loadActiveLicenseSessions(nowMs)) {
+        if (!state || !isHexLen(state.session_id, 32) || !state.mid || !state.token_hash) continue;
+        sessions.set(state.session_id, state);
+        restored++;
+    }
+    getStore().cleanupExpiredLicenseSessions(nowMs);
+    if (restored) log('INFO', `Restored ${restored} active AUTH2 session(s) from SQLite.`);
+}
+
+function persistSession(sessionId, state) {
+    getStore().saveLicenseSession(sessionId, { ...state, session_id: sessionId });
+}
+
 function hashSessionToken(token) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`session-token-v2|${token}`).digest('hex');
 }
@@ -764,6 +808,7 @@ function createSession(mid, ip, entry, maxPlayers) {
     const sessionToken = crypto.randomBytes(32).toString('hex');
     const nowMs = Date.now();
     const state = {
+        session_id: sessionId,
         mid,
         token_hash: hashSessionToken(sessionToken),
         ip,
@@ -775,6 +820,7 @@ function createSession(mid, ip, entry, maxPlayers) {
         license_key_hash_snapshot: licenseKeyHash(entry?.license_key || ''),
     };
     sessions.set(sessionId, state);
+    persistSession(sessionId, state);
     incMetric('license_sessions_created_total');
     sseBroadcast('session.created', { mid, session_id: sessionId, ip, expires_at: state.expires_at });
     return { sessionId, sessionToken, expiresAt: state.expires_at };
@@ -783,21 +829,34 @@ function validateSession(mid, sessionId, sessionToken, ip) {
     const sid = String(sessionId || '').trim();
     const st = String(sessionToken || '').trim();
     if (!isHexLen(sid, 32) || !isHexLen(st, 64)) return { ok: false, reason: 'DENY_SESSION' };
-    const state = sessions.get(sid);
+    let state = sessions.get(sid);
+    if (!state) {
+        state = getStore().loadLicenseSession(sid);
+        if (state) sessions.set(sid, state);
+    }
     if (!state) return { ok: false, reason: 'DENY_SESSION' };
     if (state.mid !== mid) return { ok: false, reason: 'DENY_SESSION' };
     if (Date.now() > state.expires_at) {
         sessions.delete(sid);
+        getStore().deleteLicenseSession(sid);
         incMetric('license_sessions_expired_total');
         sseBroadcast('session.expired', { mid, session_id: sid, reason: 'ttl' });
         return { ok: false, reason: 'SESSION_EXPIRED' };
     }
     if (!timingSafeEqualHex(hashSessionToken(st), state.token_hash)) return { ok: false, reason: 'DENY_SESSION' };
+    let changed = false;
     if (state.ip && ip && state.ip !== ip && !state.risk_flags.includes('ip_changed')) {
         state.risk_flags.push('ip_changed');
+        changed = true;
         log('WARNING', `SESSION IP-CHANGE [${mid}] sid=${sid.slice(0, 8)} prev=${state.ip} new=${ip}`);
         sseBroadcast('machine.multi_ip', { mid, prev_ip: state.ip, new_ip: ip, session_id: sid });
     }
+    const nowMs = Date.now();
+    if (!state.last_seen || nowMs - state.last_seen >= HB_DB_TOUCH_MS) {
+        state.last_seen = nowMs;
+        changed = true;
+    }
+    if (changed) persistSession(sid, state);
     return { ok: true, session_id: sid, state };
 }
 function revokeSessionsForMachine(mid) {
@@ -809,6 +868,8 @@ function revokeSessionsForMachine(mid) {
             sseBroadcast('session.expired', { mid, session_id: sid, reason: 'revoke' });
         }
     }
+    const deleted = getStore().deleteLicenseSessionsForMachine(mid);
+    n = Math.max(n, Number(deleted) || 0);
     if (n) incMetric('license_sessions_expired_total', n);
     return n;
 }
@@ -822,6 +883,8 @@ function cleanupExpiredSessions() {
             sseBroadcast('session.expired', { mid: state.mid, session_id: sid, reason: 'ttl' });
         }
     }
+    const deleted = getStore().cleanupExpiredLicenseSessions(nowMs);
+    n = Math.max(n, Number(deleted) || 0);
     if (n) incMetric('license_sessions_expired_total', n);
 }
 setInterval(cleanupExpiredSessions, 60 * 1000).unref();
@@ -1084,7 +1147,7 @@ function scheduleDailyTask(name, hour, minute, fn, { dayOfWeek = null } = {}) {
     }, 60 * 1000).unref();
 }
 
-scheduleDailyTask('daily_backup', 3, 0, doBackup);
+scheduleDailyTask('daily_backup', 3, 0, () => { doBackup().catch(() => {}); });
 
 // ── Cron: expiry warning 9:00 AM daily ───────────────────────────────────────
 scheduleDailyTask('expiry_warning', 9, 0, () => {
@@ -1452,8 +1515,14 @@ function handleTcpRequest(socket, ip, raw) {
         sessionCheck.state.last_seen = nowMs;
         sessionCheck.state.max_players_snapshot = maxPl;
         const extra = buildHeartbeatExtras(mid, entry, sessionCheck.state);
-        const lease = issueOfflineLease(mid, entry, maxPl);
-        tcpReply(socket, `OK2 ${maxPl} EXP:${sessionCheck.state.expires_at} SERVER_TIME:${nowMs}${extra} LEASE:${lease}`);
+        const leaseRefreshMs = clampInt(process.env.LICENSE_OFFLINE_LEASE_REFRESH_MS, 30 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
+        let leaseExtra = '';
+        if (!sessionCheck.state.last_lease_issued_at || nowMs - sessionCheck.state.last_lease_issued_at >= leaseRefreshMs) {
+            leaseExtra = ` LEASE:${issueOfflineLease(mid, entry, maxPl)}`;
+            sessionCheck.state.last_lease_issued_at = nowMs;
+        }
+        persistSession(sessionCheck.session_id, sessionCheck.state);
+        tcpReply(socket, `OK2 ${maxPl} EXP:${sessionCheck.state.expires_at} SERVER_TIME:${nowMs}${extra}${leaseExtra}`);
 
         active[mid] = {
             ...active[mid],
@@ -1611,16 +1680,52 @@ function handleTcpRequest(socket, ip, raw) {
     tcpRlFail(ip);
 }
 
-const tcpServer = net.createServer((socket) => {
+let _tlsCertificateInfo = { valid_to: null, fingerprint256: null };
+const _tlsConnections = new Set();
+
+function readTlsMaterial() {
+    if (!TLS_KEY_FILE || !TLS_CERT_FILE) {
+        throw new Error('LICENSE_TLS_KEY_FILE and LICENSE_TLS_CERT_FILE are required; raw TCP is disabled.');
+    }
+    const key = fs.readFileSync(TLS_KEY_FILE);
+    const cert = fs.readFileSync(TLS_CERT_FILE);
+    const ca = TLS_CA_FILE ? fs.readFileSync(TLS_CA_FILE) : undefined;
+    const x509 = new crypto.X509Certificate(cert);
+    const validToMs = Date.parse(x509.validTo);
+    if (!Number.isFinite(validToMs) || validToMs <= Date.now()) {
+        throw new Error(`TLS certificate is expired or invalid: validTo=${x509.validTo}`);
+    }
+    _tlsCertificateInfo = {
+        valid_to: new Date(validToMs).toISOString(),
+        fingerprint256: x509.fingerprint256 || null,
+        subject: x509.subject || null,
+    };
+    return {
+        key,
+        cert,
+        ...(ca ? { ca } : {}),
+        minVersion: TLS_MIN_VERSION,
+        ...(TLS_MTLS ? { requestCert: true, rejectUnauthorized: true } : { requestCert: false }),
+        handshakeTimeout: TLS_HANDSHAKE_TIMEOUT_MS,
+        honorCipherOrder: true,
+    };
+}
+
+function configureLicenseSocket(socket) {
     const ip = normalizeIp(socket.remoteAddress || '?');
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 30000);
     socket.setTimeout(TCP_SOCKET_TIMEOUT_MS);
+    if (typeof socket.disableRenegotiation === 'function') {
+        try { socket.disableRenegotiation(); } catch {}
+    }
 
+    _tlsConnections.add(socket);
     let tracked = true;
     const currentConns = (_tcpConnsPerIp.get(ip) || 0) + 1;
     _tcpConnsPerIp.set(ip, currentConns);
     socket.once('close', () => {
+        _tlsConnections.delete(socket);
         if (!tracked) return;
         tracked = false;
         const n = (_tcpConnsPerIp.get(ip) || 1) - 1;
@@ -1641,7 +1746,7 @@ const tcpServer = net.createServer((socket) => {
         buf += chunk.toString('utf8');
         if (buf.length > TCP_MAX_BUFFER_BYTES) {
             handled = true;
-            log('WARNING', `TCP OVERSIZE ${ip} len=${buf.length}`);
+            log('WARNING', `TLS FRAME OVERSIZE ${ip} len=${buf.length}`);
             tcpRlFail(ip);
             socket.destroy();
             return;
@@ -1652,16 +1757,39 @@ const tcpServer = net.createServer((socket) => {
         handled = true;
         try {
             handleTcpRequest(socket, ip, raw);
-        } catch (e) {
-            log('ERROR', `TCP HANDLER ERROR ${ip}: ${e.message}`);
+        } catch (err) {
+            log('ERROR', `TLS LICENSE HANDLER ERROR ${ip}: ${err.message}`);
             socket.destroy();
         }
     });
 
     socket.on('error', () => {});
     socket.on('timeout', () => socket.destroy());
+}
+
+const tlsServer = tls.createServer(readTlsMaterial(), (socket) => {
+    incMetric('license_tls_handshake_ok_total');
+    configureLicenseSocket(socket);
 });
-tcpServer.listen(TCP_PORT, BIND_HOST, () => log('INFO', `TCP ${BIND_HOST}:${TCP_PORT}  AES-256-GCM`));
+tlsServer.maxConnections = clampEnvInt(process.env.LICENSE_TLS_MAX_CONNECTIONS, 4096, 64, 100000);
+tlsServer.on('tlsClientError', (err, socket) => {
+    incMetric('license_tls_handshake_fail_total');
+    const ip = normalizeIp(socket?.remoteAddress || '?');
+    log('WARNING', `TLS HANDSHAKE FAIL ${ip}: ${String(err?.message || 'unknown').slice(0, 180)}`);
+});
+tlsServer.on('error', (err) => {
+    log('ERROR', `TLS listener error: ${err.message}`);
+});
+
+process.on('SIGHUP', () => {
+    try {
+        const options = readTlsMaterial();
+        tlsServer.setSecureContext(options);
+        log('INFO', `TLS certificate reloaded; valid_to=${_tlsCertificateInfo.valid_to}`);
+    } catch (err) {
+        log('ERROR', `TLS certificate reload failed; keeping current certificate: ${err.message}`);
+    }
+});
 
 // ── Express + HTTP server ─────────────────────────────────────────────────────
 const app        = express();
@@ -1679,8 +1807,9 @@ app.use(express.json());
 function clientIp(req) {
     return normalizeIp(req.socket.remoteAddress || '?');
 }
+const webSessionStore = new SqliteSessionStore({ store: getStore(), ttlMs: 8 * 60 * 60 * 1000 });
 const sessionParser = session({
-    store: new FileSessionStore({ dir: SESSION_DIR, ttlMs: 8 * 60 * 60 * 1000 }),
+    store: webSessionStore,
     secret: RUNTIME_SECRETS.sessionSecret,
     resave: false, saveUninitialized: false,
     cookie: {
@@ -1739,19 +1868,20 @@ function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
         return { ok: false, error: e.message };
     }
 
+    if (path.resolve(targetInfo.dir) !== path.resolve(DATA_DIR)) {
+        return { ok: false, error: 'SQLite đang mở tại LICENSE_DATA_DIR hiện tại. Hãy đổi LICENSE_DATA_DIR trong PM2 rồi restart trước khi setup.' };
+    }
+
     rememberDataDir(__dirname, targetInfo.dir);
     const nextCreds = { user, pass_hash: hashPassword(pass) };
-    writeFilePrivateAtomic(path.join(targetInfo.dir, 'admin.json'), JSON.stringify(nextCreds, null, 2) + '\n');
-
-    if (path.resolve(targetInfo.dir) === path.resolve(DATA_DIR)) {
-        adminCreds = nextCreds;
-        WEB_USER = user;
-        setupRequired = false;
-    }
+    getStore().saveAdminCredentials(nextCreds);
+    adminCreds = nextCreds;
+    WEB_USER = user;
+    setupRequired = false;
 
     return {
         ok: true,
-        restartRequired: path.resolve(targetInfo.dir) !== path.resolve(DATA_DIR),
+        restartRequired: false,
         dataDir: targetInfo.dir,
     };
 }
@@ -1924,6 +2054,7 @@ app.get('/', auth, (req, res) => {
             pending_key: _pendingKey.has(mid),
         };
     }).sort((a, b) => b.players - a.players);
+    const storeHealth = getStore().health();
     res.render('dashboard', {
         active_count:  rows.length,
         total:         Object.keys(db).length,
@@ -1933,6 +2064,16 @@ app.get('/', auth, (req, res) => {
         maintenance:   isMaintenanceActive(),
         rows, flash: consumeFlash(req.session), TIERS,
         last_updated:  new Date().toLocaleTimeString('vi-VN'),
+        transport: {
+            mode: 'TLS-only',
+            port: TLS_PORT,
+            listening: tlsServer.listening,
+            connections: _tlsConnections.size,
+            certificate_valid_to: _tlsCertificateInfo.valid_to,
+            min_version: TLS_MIN_VERSION,
+        },
+        database: storeHealth,
+        auth2_sessions: sessions.size,
     });
 });
 
@@ -2302,7 +2443,7 @@ app.post('/plans/delete', auth, (req, res) => {
 // ── Settings ──────────────────────────────────────────────────────────────────
 function operationsSnapshot() {
     const backups = fs.existsSync(BACKUP_DIR)
-        ? fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('whitelist_') && f.endsWith('.json')).sort()
+        ? fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('license_') && f.endsWith('.sqlite3')).sort()
         : [];
     const latestBackup = backups.length ? backups[backups.length - 1] : null;
     const memory = process.memoryUsage();
@@ -2324,7 +2465,8 @@ function operationsSnapshot() {
         dataDir: DATA_DIR,
         dataDirSource: DATA_DIR_INFO.source,
         webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
-        tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
+        tlsAddress: `${BIND_HOST}:${TLS_PORT}`,
+        tcpAddress: null,
         deployStatus: deployManager.status(),
         storeHealth: (() => { try { return getStore().health(); } catch (e) { return { error: e.message }; } })(),
     };
@@ -2499,8 +2641,7 @@ app.post('/settings/change-password', auth, (req, res) => {
 
     // Save new password
     adminCreds = { user: WEB_USER, pass_hash: hashPassword(newPassword) };
-    writeFilePrivateAtomic(ADMIN_FILE, JSON.stringify(adminCreds, null, 2) + '\n');
-    updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
+    getStore().saveAdminCredentials(adminCreds);
 
     audit(req, 'settings.change_password', {});
     log('SECURITY', `ADMIN PASSWORD CHANGED  ip=${clientIp(req)}`);
@@ -2614,16 +2755,39 @@ app.post('/portal', (req, res) => {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
+    const dbHealth = getStore().health();
+    const database = {
+        driver: dbHealth.driver,
+        ok: dbHealth.ok,
+        journal_mode: dbHealth.journal_mode,
+        quick_check: dbHealth.quick_check,
+        db_size_bytes: dbHealth.db_size_bytes,
+        wal_size_bytes: dbHealth.wal_size_bytes,
+        last_backup_at: dbHealth.last_backup_at,
+    };
+    const healthy = startupState.ready && tlsServer.listening && database.ok;
+    res.status(healthy ? 200 : 503).json({
+        status: healthy ? 'ok' : 'degraded',
         uptime: Math.floor(process.uptime()),
         runtime: {
             node_env: RUNTIME.nodeEnv,
             web_port: WEB_PORT,
-            tcp_port: TCP_PORT,
             pm2: RUNTIME.pm2,
         },
-        maintenance: isMaintenanceActive(), ts: Date.now(),
+        transport: {
+            tls_only: true,
+            tls_enabled: true,
+            tls_port: TLS_PORT,
+            tls_listening: tlsServer.listening,
+            tls_connections: _tlsConnections.size,
+            tls_min_version: TLS_MIN_VERSION,
+            certificate_valid_to: _tlsCertificateInfo.valid_to,
+            raw_tcp_enabled: false,
+        },
+        database,
+        auth2_sessions_active: sessions.size,
+        maintenance: isMaintenanceActive(),
+        ts: Date.now(),
     });
 });
 
@@ -2923,17 +3087,35 @@ app.get('/api/machine/:mid/exec/:id', auth, (req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-httpServer.listen(WEB_PORT, BIND_HOST, () => {
-    log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
-    for (const warning of RUNTIME.warnings) log('WARNING', warning);
+const startupState = { http: false, tls: false, ready: false };
+let shuttingDown = false;
 
-    // ── Security: migrate old audit log format → HMAC chain ───────────────
+function failStartup(component, err) {
+    if (startupState.ready || shuttingDown) return;
+    log('ERROR', `${component} startup failed: ${err.message}`);
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+}
+
+function maybeSignalReady() {
+    if (startupState.ready || !startupState.http || !startupState.tls) return;
+    const dbHealth = getStore().health();
+    if (!dbHealth.ok) return failStartup('SQLite', new Error(`quick_check=${dbHealth.quick_check}, journal=${dbHealth.journal_mode}`));
+    startupState.ready = true;
+    log('INFO', `READY TLS=${BIND_HOST}:${TLS_PORT} SQLite=${dbHealth.db_path}`);
+    if (typeof process.send === 'function') process.send('ready');
+    doBackup().catch(() => {});
+}
+
+function initializeRuntime() {
+    for (const warning of RUNTIME.warnings) log('WARNING', warning);
+    restorePersistedSessions();
+    repairDBMaxPlayers();
+
     const auditMigrate = migrateAuditChainIfNeeded(AUDIT_FILE);
     if (auditMigrate.migrated) {
         log('INFO', `Audit log migrated: ${auditMigrate.entries} entries — added HMAC chain hashes`);
     }
-
-    // ── Security: verify audit log integrity ───────────────────────────────
     const auditVerify = verifyAuditChain(AUDIT_FILE);
     if (!auditVerify.ok) {
         log('SECURITY', `AUDIT CHAIN TAMPERED! ${auditVerify.error} (${auditVerify.entries} entries)`);
@@ -2941,43 +3123,51 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
     } else {
         log('INFO', `Audit chain verified: ${auditVerify.entries} entries OK`);
     }
-
-    // ── Security: verify config file integrity ────────────────────────────
-    const integrityResults = verifyAllChecksums(CHECKSUM_FILE);
-    const tampered = integrityResults.filter(r => !r.ok);
-    if (tampered.length > 0) {
-        const list = tampered.map(r => `• ${path.basename(r.file)}: ${r.error}${r.expected ? ' (expected ' + r.expected + '..., got ' + r.actual + '...)' : ''}`).join('\n');
-        log('SECURITY', `CONFIG INTEGRITY TAMPERED!\n${list}`);
-        sendTelegram(`🚨 <b>SECURITY ALERT: Config Files Tampered!</b>\n${list}`);
-    } else if (integrityResults.length > 0) {
-        log('INFO', `Config integrity verified: ${integrityResults.length} files OK`);
-    }
-
-    // ── Initialize checksums for new files ─────────────────────────────────
-    if (!fs.existsSync(CHECKSUM_FILE)) {
-        updateChecksum(CHECKSUM_FILE, DB_FILE);
-        updateChecksum(CHECKSUM_FILE, BAN_FILE);
-        updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
-        updateChecksum(CHECKSUM_FILE, PLANS_FILE);
-        updateChecksum(CHECKSUM_FILE, ADMIN_FILE);
-        log('INFO', 'Config checksums initialized');
-    }
-
-    doBackup(); // Backup on startup
-    repairDBMaxPlayers(); // Quét và sửa các entry có max_players lỗi
-});
-
-function shutdown(signal) {
-    log('INFO', `${signal} received, shutting down gracefully...`);
-    const forceExit = setTimeout(() => process.exit(1), 10000);
-    forceExit.unref();
-    tcpServer.close(() => {
-        httpServer.close(() => {
-            log('INFO', 'Shutdown complete');
-            process.exit(0);
-        });
-    });
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+initializeRuntime();
+
+httpServer.once('error', err => failStartup('HTTP', err));
+tlsServer.once('error', err => failStartup('TLS', err));
+
+httpServer.listen(WEB_PORT, BIND_HOST, () => {
+    startupState.http = true;
+    log('INFO', `Web UI: http://${BIND_HOST}:${WEB_PORT}`);
+    maybeSignalReady();
+});
+
+tlsServer.listen(TLS_PORT, BIND_HOST, () => {
+    startupState.tls = true;
+    log('INFO', `TLS license listener: ${BIND_HOST}:${TLS_PORT} min=${TLS_MIN_VERSION} AES-256-GCM payload valid_to=${_tlsCertificateInfo.valid_to}`);
+    maybeSignalReady();
+});
+
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    incMetric('license_graceful_shutdown_total');
+    log('INFO', `${signal} received, shutting down gracefully...`);
+    const forceExit = setTimeout(() => process.exit(1), 12000);
+    forceExit.unref();
+
+    const closeServer = server => new Promise(resolve => {
+        if (!server.listening) return resolve();
+        server.close(() => resolve());
+    });
+
+    const tlsClosed = closeServer(tlsServer);
+    const httpClosed = closeServer(httpServer);
+    for (const socket of _tlsConnections) socket.destroy();
+    _tlsConnections.clear();
+    if (typeof httpServer.closeAllConnections === 'function') httpServer.closeAllConnections();
+    await Promise.all([tlsClosed, httpClosed]);
+    try { webSessionStore.close(); } catch {}
+    try { if (_backupInFlight) await _backupInFlight; } catch {}
+    try { getStore().close(); } catch (err) { log('ERROR', `SQLite close failed: ${err.message}`); }
+    clearTimeout(forceExit);
+    log('INFO', 'Shutdown complete');
+    process.exit(0);
+}
+
+process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(1)); });
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(1)); });

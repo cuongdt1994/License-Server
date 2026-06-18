@@ -1,31 +1,18 @@
 'use strict';
 
-const { JsonStore } = require('./store_json');
+const { SqliteStore } = require('./store_sqlite');
 
 function createStore(options = {}) {
-    const requested = String(options.driver || process.env.LICENSE_DB_DRIVER || 'json').trim().toLowerCase();
-    const fallbackToJson = options.fallbackToJson !== false && process.env.LICENSE_DB_SQLITE_STRICT !== '1';
-    const log = typeof options.log === 'function'
-        ? options.log
-        : (level, msg) => console.log(`${level || 'INFO'} ${msg}`);
-
-    if (requested === 'sqlite') {
-        try {
-            const { SqliteStore } = require('./store_sqlite');
-            const store = new SqliteStore(options);
-            store.init();
-            log('INFO', `LICENSE_DB_DRIVER=sqlite active (${store.dbPath})`);
-            return store;
-        } catch (err) {
-            const msg = `LICENSE_DB_DRIVER=sqlite unavailable: ${err.message}`;
-            if (!fallbackToJson) throw new Error(`${msg}; set LICENSE_DB_SQLITE_STRICT=0 or install better-sqlite3.`);
-            log('ERROR', `${msg}; falling back to JSON mode.`);
-        }
+    const requested = String(options.driver || process.env.LICENSE_DB_DRIVER || 'sqlite').trim().toLowerCase();
+    if (requested !== 'sqlite') {
+        throw new Error(`Only SQLite is supported; LICENSE_DB_DRIVER=${requested} is invalid.`);
     }
-
-    const store = new JsonStore(options);
+    const store = new SqliteStore(options);
     store.init();
-    log('INFO', 'LICENSE_DB_DRIVER=json active');
+    const health = store.health();
+    if (!health.ok) throw new Error(`SQLite startup check failed: journal=${health.journal_mode}, quick_check=${health.quick_check}`);
+    const log = typeof options.log === 'function' ? options.log : () => {};
+    log('INFO', `SQLite active (${store.dbPath}) journal=${health.journal_mode}`);
     return store;
 }
 

@@ -64,6 +64,36 @@
     </div>
   </div>
 
+  <!-- Runtime status -->
+  <div class="stat-grid">
+    <div class="stat-card" style="--accent:#22c55e">
+      <div class="stat-label">🔒 Transport</div>
+      <div class="stat-value" style="font-size:20px"><%= transport && transport.listening ? 'TLS-only' : 'TLS down' %></div>
+      <div class="card-sub">Port <%= transport ? transport.port : '—' %> · <%= transport ? transport.min_version : '—' %></div>
+    </div>
+    <div class="stat-card" style="--accent:#0ea5e9">
+      <div class="stat-label">🗄️ Database</div>
+      <div class="stat-value" style="font-size:20px"><%= database && database.ok ? 'SQLite WAL' : 'SQLite lỗi' %></div>
+      <div class="card-sub"><%= database ? Math.round((database.db_size_bytes || 0) / 1024 / 1024 * 100) / 100 : 0 %> MB</div>
+    </div>
+    <div class="stat-card" style="--accent:#a78bfa">
+      <div class="stat-label">🤝 TLS connections</div>
+      <div class="stat-value"><%= transport ? transport.connections : 0 %></div>
+    </div>
+    <div class="stat-card" style="--accent:#f59e0b">
+      <div class="stat-label">🎟️ AUTH2 sessions</div>
+      <div class="stat-value"><%= typeof auth2_sessions !== 'undefined' ? auth2_sessions : 0 %></div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:14px 18px">
+    <div class="card-sub">
+      Chứng chỉ hết hạn: <b><%= transport && transport.certificate_valid_to ? new Date(transport.certificate_valid_to).toLocaleString('vi-VN') : '—' %></b>
+      · WAL: <b><%= database ? Math.round((database.wal_size_bytes || 0) / 1024) : 0 %> KB</b>
+      · Raw TCP: <b style="color:#22c55e">đã tắt</b>
+    </div>
+  </div>
+
   <!-- Player chart -->
   <div class="card">
     <div class="card-header">

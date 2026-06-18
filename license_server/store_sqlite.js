@@ -2,21 +2,24 @@
 
 const fs = require('fs');
 const path = require('path');
+const BetterSqlite3 = require('better-sqlite3');
 
-let BetterSqlite3;
-try {
-    BetterSqlite3 = require('better-sqlite3');
-} catch (err) {
-    throw new Error('better-sqlite3 package is not installed');
+function toJson(value) {
+    return JSON.stringify(value === undefined ? null : value);
 }
 
-function readJsonIfExists(file, fallback) {
+function fromJson(value, fallback) {
+    try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function readLegacyJson(file, fallback) {
     if (!fs.existsSync(file)) return fallback;
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
 
-function toJson(value) { return JSON.stringify(value === undefined ? null : value); }
-function fromJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
+function safeStatSize(file) {
+    try { return fs.statSync(file).size; } catch { return 0; }
+}
 
 class SqliteStore {
     constructor(options = {}) {
@@ -26,19 +29,38 @@ class SqliteStore {
         this.log = typeof options.log === 'function' ? options.log : () => {};
         this.saveTotal = 0;
         this.saveFailTotal = 0;
+        this.lastBackupAt = 0;
+        this.lastBackupFile = '';
         this.db = null;
+        this.stmt = Object.create(null);
     }
 
     init() {
-        fs.mkdirSync(this.dataDir, { recursive: true });
-        this.db = new BetterSqlite3(this.dbPath);
+        fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+        try { fs.chmodSync(this.dataDir, 0o700); } catch {}
+
+        this.db = new BetterSqlite3(this.dbPath, {
+            timeout: Number.parseInt(process.env.LICENSE_SQLITE_BUSY_TIMEOUT_MS || '5000', 10),
+        });
+        try { fs.chmodSync(this.dbPath, 0o600); } catch {}
+
         this.db.pragma('journal_mode = WAL');
-        this.db.pragma('synchronous = NORMAL');
+        this.db.pragma(`synchronous = ${String(process.env.LICENSE_SQLITE_SYNCHRONOUS || 'NORMAL').toUpperCase()}`);
+        this.db.pragma('foreign_keys = ON');
+        this.db.pragma('busy_timeout = 5000');
+        this.db.pragma('temp_store = MEMORY');
+        this.db.pragma('wal_autocheckpoint = 1000');
+
         this.db.exec(`
+CREATE TABLE IF NOT EXISTS schema_migrations(
+  version INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL,
+  description TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS machines(
   mid TEXT PRIMARY KEY,
   data_json TEXT NOT NULL,
-  updated_at INTEGER
+  updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
@@ -46,6 +68,7 @@ CREATE TABLE IF NOT EXISTS settings(
 );
 CREATE TABLE IF NOT EXISTS plans(
   id TEXT PRIMARY KEY,
+  sort_order INTEGER NOT NULL,
   data_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS bans(
@@ -55,7 +78,8 @@ CREATE TABLE IF NOT EXISTS bans(
 CREATE TABLE IF NOT EXISTS stats(
   mid TEXT NOT NULL,
   ts INTEGER NOT NULL,
-  players INTEGER NOT NULL
+  players INTEGER NOT NULL,
+  PRIMARY KEY(mid, ts)
 );
 CREATE TABLE IF NOT EXISTS history(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,181 +87,438 @@ CREATE TABLE IF NOT EXISTS history(
   mid TEXT,
   event TEXT,
   ip TEXT,
-  data_json TEXT
+  data_json TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS sessions(
+CREATE TABLE IF NOT EXISTS license_sessions(
   session_id TEXT PRIMARY KEY,
   mid TEXT NOT NULL,
   token_hash TEXT NOT NULL,
   ip TEXT,
-  created_at INTEGER,
-  expires_at INTEGER,
-  last_seen INTEGER,
-  data_json TEXT
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  data_json TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_stats_mid_ts ON stats(mid, ts);
+CREATE TABLE IF NOT EXISTS web_sessions(
+  sid TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL,
+  data_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_credentials(
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  data_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_history_ts_ms ON history(ts_ms);
-CREATE INDEX IF NOT EXISTS idx_sessions_mid ON sessions(mid);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_license_sessions_mid ON license_sessions(mid);
+CREATE INDEX IF NOT EXISTS idx_license_sessions_expires ON license_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
 `);
-        this._migrateJsonOnce();
+
+        this._upgradeLegacySqliteSchema();
+        this._prepare();
+        this._migrateLegacyJson();
+        const quick = this.quickCheck();
+        if (!quick.ok) throw new Error(`SQLite quick_check failed: ${quick.result}`);
+        return this;
     }
 
-    _tableEmpty(table) {
-        return this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n === 0;
+    _upgradeLegacySqliteSchema() {
+        const planColumns = this.db.pragma('table_info(plans)').map(row => row.name);
+        if (planColumns.length && !planColumns.includes('sort_order')) {
+            this.db.exec('ALTER TABLE plans ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+        }
+
+        const legacySessions = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get();
+        if (legacySessions) {
+            const targetCount = this.db.prepare('SELECT COUNT(*) AS n FROM license_sessions').get().n;
+            if (targetCount === 0) {
+                const rows = this.db.prepare('SELECT session_id,mid,token_hash,ip,created_at,expires_at,last_seen,data_json FROM sessions WHERE expires_at>?').all(Date.now());
+                const insert = this.db.prepare(`INSERT OR REPLACE INTO license_sessions(session_id,mid,token_hash,ip,created_at,expires_at,last_seen,data_json)
+                    VALUES(?,?,?,?,?,?,?,?)`);
+                this.db.transaction(() => {
+                    for (const row of rows) {
+                        let data = fromJson(row.data_json, {});
+                        data = { ...data, session_id: row.session_id, mid: row.mid, token_hash: row.token_hash, ip: row.ip,
+                            created_at: row.created_at, expires_at: row.expires_at, last_seen: row.last_seen };
+                        insert.run(row.session_id, row.mid, row.token_hash, row.ip, row.created_at || Date.now(), row.expires_at, row.last_seen || Date.now(), toJson(data));
+                    }
+                })();
+            }
+        }
     }
 
-    _migrateJsonOnce() {
-        const marker = path.join(this.dataDir, '.sqlite_import_done');
-        if (fs.existsSync(marker)) return;
-        let importedMachines = 0;
-        const dbJson = readJsonIfExists(path.join(this.dataDir, 'whitelist.json'), {});
-        if (dbJson && typeof dbJson === 'object' && this._tableEmpty('machines')) {
-            const stmt = this.db.prepare('INSERT OR REPLACE INTO machines(mid, data_json, updated_at) VALUES(?, ?, ?)');
-            const tx = this.db.transaction((rows) => {
-                for (const [mid, entry] of Object.entries(rows)) {
-                    stmt.run(mid, toJson(entry), Date.now());
-                    importedMachines++;
+    _prepare() {
+        const p = (sql) => this.db.prepare(sql);
+        this.stmt.machineAll = p('SELECT mid, data_json FROM machines');
+        this.stmt.machineUpsert = p('INSERT INTO machines(mid,data_json,updated_at) VALUES(?,?,?) ON CONFLICT(mid) DO UPDATE SET data_json=excluded.data_json, updated_at=excluded.updated_at');
+        this.stmt.machineKeys = p('SELECT mid FROM machines');
+        this.stmt.machineDelete = p('DELETE FROM machines WHERE mid=?');
+
+        this.stmt.settingsAll = p('SELECT key,value_json FROM settings');
+        this.stmt.settingUpsert = p('INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json');
+        this.stmt.settingKeys = p('SELECT key FROM settings');
+        this.stmt.settingDelete = p('DELETE FROM settings WHERE key=?');
+
+        this.stmt.plansAll = p('SELECT data_json FROM plans ORDER BY sort_order,id');
+        this.stmt.planUpsert = p('INSERT INTO plans(id,sort_order,data_json) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET sort_order=excluded.sort_order,data_json=excluded.data_json');
+        this.stmt.planKeys = p('SELECT id FROM plans');
+        this.stmt.planDelete = p('DELETE FROM plans WHERE id=?');
+
+        this.stmt.bansAll = p('SELECT range,data_json FROM bans');
+        this.stmt.banUpsert = p('INSERT INTO bans(range,data_json) VALUES(?,?) ON CONFLICT(range) DO UPDATE SET data_json=excluded.data_json');
+        this.stmt.banKeys = p('SELECT range FROM bans');
+        this.stmt.banDelete = p('DELETE FROM bans WHERE range=?');
+
+        this.stmt.statInsert = p('INSERT OR REPLACE INTO stats(mid,ts,players) VALUES(?,?,?)');
+        this.stmt.statsAll = p('SELECT mid,ts,players FROM stats ORDER BY ts');
+        this.stmt.statsDeleteAll = p('DELETE FROM stats');
+        this.stmt.statsPruneAge = p('DELETE FROM stats WHERE ts < ?');
+        this.stmt.statsPrunePerMid = p(`DELETE FROM stats WHERE rowid IN (
+            SELECT rowid FROM stats WHERE mid=? ORDER BY ts DESC LIMIT -1 OFFSET ?
+        )`);
+
+        this.stmt.historyInsert = p('INSERT INTO history(ts_ms,mid,event,ip,data_json) VALUES(?,?,?,?,?)');
+        this.stmt.historyAll = p('SELECT data_json FROM history ORDER BY ts_ms DESC LIMIT ?');
+        this.stmt.historyDeleteAll = p('DELETE FROM history');
+        this.stmt.historyPruneAge = p('DELETE FROM history WHERE ts_ms < ?');
+        this.stmt.historyPruneCount = p('DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY ts_ms DESC LIMIT ?)');
+
+        this.stmt.licenseSessionUpsert = p(`INSERT INTO license_sessions(session_id,mid,token_hash,ip,created_at,expires_at,last_seen,data_json)
+            VALUES(@session_id,@mid,@token_hash,@ip,@created_at,@expires_at,@last_seen,@data_json)
+            ON CONFLICT(session_id) DO UPDATE SET mid=excluded.mid,token_hash=excluded.token_hash,ip=excluded.ip,created_at=excluded.created_at,expires_at=excluded.expires_at,last_seen=excluded.last_seen,data_json=excluded.data_json`);
+        this.stmt.licenseSessionGet = p('SELECT data_json FROM license_sessions WHERE session_id=?');
+        this.stmt.licenseSessionActive = p('SELECT data_json FROM license_sessions WHERE expires_at>?');
+        this.stmt.licenseSessionDelete = p('DELETE FROM license_sessions WHERE session_id=?');
+        this.stmt.licenseSessionDeleteMid = p('DELETE FROM license_sessions WHERE mid=?');
+        this.stmt.licenseSessionDeleteExpired = p('DELETE FROM license_sessions WHERE expires_at<=?');
+
+        this.stmt.webSessionGet = p('SELECT data_json,expires_at FROM web_sessions WHERE sid=?');
+        this.stmt.webSessionUpsert = p(`INSERT INTO web_sessions(sid,expires_at,data_json,updated_at) VALUES(?,?,?,?)
+            ON CONFLICT(sid) DO UPDATE SET expires_at=excluded.expires_at,data_json=excluded.data_json,updated_at=excluded.updated_at`);
+        this.stmt.webSessionDelete = p('DELETE FROM web_sessions WHERE sid=?');
+        this.stmt.webSessionDeleteExpired = p('DELETE FROM web_sessions WHERE expires_at<=?');
+        this.stmt.webSessionClear = p('DELETE FROM web_sessions');
+
+        this.stmt.adminGet = p('SELECT data_json FROM admin_credentials WHERE id=1');
+        this.stmt.adminSet = p(`INSERT INTO admin_credentials(id,data_json,updated_at) VALUES(1,?,?)
+            ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,updated_at=excluded.updated_at`);
+    }
+
+    _write(fn) {
+        try {
+            const result = this.db.transaction(fn)();
+            this.saveTotal++;
+            return result;
+        } catch (err) {
+            this.saveFailTotal++;
+            throw err;
+        }
+    }
+
+    _migrateLegacyJson() {
+        const version = 1;
+        if (this.db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return;
+
+        const files = {
+            machines: path.join(this.dataDir, 'whitelist.json'),
+            settings: path.join(this.dataDir, 'settings.json'),
+            plans: path.join(this.dataDir, 'plans.json'),
+            bans: path.join(this.dataDir, 'bans.json'),
+            stats: path.join(this.dataDir, 'stats.json'),
+            history: path.join(this.dataDir, 'history.json'),
+            admin: path.join(this.dataDir, 'admin.json'),
+        };
+        const existing = Object.values(files).filter(f => fs.existsSync(f));
+
+        this._write(() => {
+            if (this.db.prepare('SELECT COUNT(*) n FROM machines').get().n === 0) {
+                const rows = readLegacyJson(files.machines, {});
+                const ts = Date.now();
+                for (const [mid, value] of Object.entries(rows || {})) this.stmt.machineUpsert.run(mid, toJson(value), ts);
+            }
+            if (this.db.prepare('SELECT COUNT(*) n FROM settings').get().n === 0) {
+                const rows = readLegacyJson(files.settings, {});
+                for (const [key, value] of Object.entries(rows || {})) this.stmt.settingUpsert.run(key, toJson(value));
+            }
+            if (this.db.prepare('SELECT COUNT(*) n FROM plans').get().n === 0) {
+                const rows = readLegacyJson(files.plans, []);
+                (Array.isArray(rows) ? rows : []).forEach((value, i) => this.stmt.planUpsert.run(String(value.id || `plan_${i}`), i, toJson(value)));
+            }
+            if (this.db.prepare('SELECT COUNT(*) n FROM bans').get().n === 0) {
+                const rows = readLegacyJson(files.bans, {});
+                for (const [range, value] of Object.entries(rows || {})) this.stmt.banUpsert.run(range, toJson(value));
+            }
+            if (this.db.prepare('SELECT COUNT(*) n FROM stats').get().n === 0) {
+                const rows = readLegacyJson(files.stats, {});
+                for (const [mid, points] of Object.entries(rows || {})) {
+                    if (!Array.isArray(points)) continue;
+                    for (const point of points) {
+                        if (Array.isArray(point) && point.length >= 2) this.stmt.statInsert.run(mid, Number(point[0]) || Date.now(), Math.max(0, Number(point[1]) || 0));
+                    }
                 }
-            });
-            tx(dbJson);
-        }
-        const settings = readJsonIfExists(path.join(this.dataDir, 'settings.json'), {});
-        if (settings && typeof settings === 'object' && this._tableEmpty('settings')) this.saveSettings(settings);
-        const plans = readJsonIfExists(path.join(this.dataDir, 'plans.json'), []);
-        if (Array.isArray(plans) && plans.length && this._tableEmpty('plans')) this.savePlans(plans);
-        const bans = readJsonIfExists(path.join(this.dataDir, 'bans.json'), {});
-        if (bans && typeof bans === 'object' && this._tableEmpty('bans')) this.saveBans(bans);
-        const stats = readJsonIfExists(path.join(this.dataDir, 'stats.json'), {});
-        if (stats && typeof stats === 'object' && this._tableEmpty('stats')) {
-            const stmt = this.db.prepare('INSERT INTO stats(mid, ts, players) VALUES(?, ?, ?)');
-            const tx = this.db.transaction((all) => {
-                for (const [mid, rows] of Object.entries(all)) {
-                    if (!Array.isArray(rows)) continue;
-                    for (const row of rows) if (Array.isArray(row) && row.length >= 2) stmt.run(mid, Number(row[0]) || Date.now(), Number(row[1]) || 0);
+            }
+            if (this.db.prepare('SELECT COUNT(*) n FROM history').get().n === 0) {
+                const rows = readLegacyJson(files.history, []);
+                for (const value of (Array.isArray(rows) ? rows : [])) {
+                    this.stmt.historyInsert.run(Number(value.ts_ms) || Date.now(), value.mid || null, value.event || null, value.ip || null, toJson(value));
                 }
-            });
-            tx(stats);
+            }
+            if (!this.stmt.adminGet.get()) {
+                const admin = readLegacyJson(files.admin, null);
+                if (admin && typeof admin === 'object') this.stmt.adminSet.run(toJson(admin), Date.now());
+            }
+            this.db.prepare('INSERT INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)')
+                .run(version, Date.now(), 'Import legacy JSON data into SQLite');
+        });
+
+        for (const file of existing) {
+            const dest = `${file}.migrated-backup`;
+            try {
+                if (!fs.existsSync(dest)) fs.renameSync(file, dest);
+                else fs.unlinkSync(file);
+            } catch (err) {
+                this.log('WARNING', `Cannot retire legacy JSON ${path.basename(file)}: ${err.message}`);
+            }
         }
-        const history = readJsonIfExists(path.join(this.dataDir, 'history.json'), []);
-        if (Array.isArray(history) && history.length && this._tableEmpty('history')) {
-            const stmt = this.db.prepare('INSERT INTO history(ts_ms, mid, event, ip, data_json) VALUES(?, ?, ?, ?, ?)');
-            const tx = this.db.transaction((rows) => {
-                for (const item of rows) stmt.run(Number(item.ts_ms) || Date.now(), item.mid || null, item.event || null, item.ip || null, toJson(item));
-            });
-            tx(history);
-        }
-        fs.writeFileSync(marker, `${Date.now()}\n`, { mode: 0o600 });
-        this.log('INFO', `SQLITE MIGRATION imported machines=${importedMachines}`);
+        if (existing.length) this.log('INFO', `SQLite migration completed; retired ${existing.length} legacy JSON file(s).`);
     }
 
     loadDB() {
-        const rows = this.db.prepare('SELECT mid, data_json FROM machines').all();
         const out = {};
-        for (const row of rows) out[row.mid] = fromJson(row.data_json, {});
+        for (const row of this.stmt.machineAll.all()) out[row.mid] = fromJson(row.data_json, {});
         return out;
     }
-    saveDB(db) {
-        try {
-            const del = this.db.prepare('DELETE FROM machines');
-            const ins = this.db.prepare('INSERT INTO machines(mid, data_json, updated_at) VALUES(?, ?, ?)');
-            const tx = this.db.transaction((data) => {
-                del.run();
-                const ts = Date.now();
-                for (const [mid, entry] of Object.entries(data || {})) ins.run(mid, toJson(entry), ts);
-            });
-            tx(db || {});
-            this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+
+    saveDB(data) {
+        const input = data || {};
+        return this._write(() => {
+            const keep = new Set(Object.keys(input));
+            const ts = Date.now();
+            for (const [mid, value] of Object.entries(input)) this.stmt.machineUpsert.run(mid, toJson(value), ts);
+            for (const row of this.stmt.machineKeys.all()) if (!keep.has(row.mid)) this.stmt.machineDelete.run(row.mid);
+        });
     }
+
     loadSettings() {
-        const rows = this.db.prepare('SELECT key, value_json FROM settings').all();
         const out = {};
-        for (const row of rows) out[row.key] = fromJson(row.value_json, null);
+        for (const row of this.stmt.settingsAll.all()) out[row.key] = fromJson(row.value_json, null);
         return out;
     }
-    saveSettings(settings) {
-        try {
-            const del = this.db.prepare('DELETE FROM settings');
-            const ins = this.db.prepare('INSERT INTO settings(key, value_json) VALUES(?, ?)');
-            const tx = this.db.transaction((data) => { del.run(); for (const [k, v] of Object.entries(data || {})) ins.run(k, toJson(v)); });
-            tx(settings || {}); this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+
+    saveSettings(data) {
+        const input = data || {};
+        return this._write(() => {
+            const keep = new Set(Object.keys(input));
+            for (const [key, value] of Object.entries(input)) this.stmt.settingUpsert.run(key, toJson(value));
+            for (const row of this.stmt.settingKeys.all()) if (!keep.has(row.key)) this.stmt.settingDelete.run(row.key);
+        });
     }
+
     loadPlans() {
-        return this.db.prepare('SELECT data_json FROM plans ORDER BY id').all().map(r => fromJson(r.data_json, {}));
+        return this.stmt.plansAll.all().map(row => fromJson(row.data_json, {}));
     }
-    savePlans(plans) {
-        try {
-            const del = this.db.prepare('DELETE FROM plans');
-            const ins = this.db.prepare('INSERT INTO plans(id, data_json) VALUES(?, ?)');
-            const tx = this.db.transaction((rows) => { del.run(); (Array.isArray(rows) ? rows : []).forEach((p, i) => ins.run(String(p.id || `plan_${i}`), toJson(p))); });
-            tx(plans); this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+
+    savePlans(data) {
+        const input = Array.isArray(data) ? data : [];
+        return this._write(() => {
+            const keep = new Set();
+            input.forEach((value, i) => {
+                const id = String(value.id || `plan_${i}`);
+                keep.add(id);
+                this.stmt.planUpsert.run(id, i, toJson(value));
+            });
+            for (const row of this.stmt.planKeys.all()) if (!keep.has(row.id)) this.stmt.planDelete.run(row.id);
+        });
     }
+
     loadBans() {
-        const rows = this.db.prepare('SELECT range, data_json FROM bans').all();
         const out = {};
-        for (const row of rows) out[row.range] = fromJson(row.data_json, {});
+        for (const row of this.stmt.bansAll.all()) out[row.range] = fromJson(row.data_json, {});
         return out;
     }
-    saveBans(bans) {
-        try {
-            const del = this.db.prepare('DELETE FROM bans');
-            const ins = this.db.prepare('INSERT INTO bans(range, data_json) VALUES(?, ?)');
-            const tx = this.db.transaction((data) => { del.run(); for (const [range, info] of Object.entries(data || {})) ins.run(range, toJson(info)); });
-            tx(bans || {}); this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+
+    saveBans(data) {
+        const input = data || {};
+        return this._write(() => {
+            const keep = new Set(Object.keys(input));
+            for (const [range, value] of Object.entries(input)) this.stmt.banUpsert.run(range, toJson(value));
+            for (const row of this.stmt.banKeys.all()) if (!keep.has(row.range)) this.stmt.banDelete.run(row.range);
+        });
     }
+
     loadStats() {
-        const rows = this.db.prepare('SELECT mid, ts, players FROM stats ORDER BY ts').all();
         const out = {};
-        for (const row of rows) {
+        for (const row of this.stmt.statsAll.all()) {
             if (!Array.isArray(out[row.mid])) out[row.mid] = [];
             out[row.mid].push([row.ts, row.players]);
         }
         return out;
     }
-    saveStats(stats) {
+
+    saveStats(data) {
+        const input = data || {};
+        return this._write(() => {
+            this.stmt.statsDeleteAll.run();
+            for (const [mid, rows] of Object.entries(input)) {
+                if (!Array.isArray(rows)) continue;
+                for (const row of rows) if (Array.isArray(row) && row.length >= 2) this.stmt.statInsert.run(mid, Number(row[0]) || Date.now(), Math.max(0, Number(row[1]) || 0));
+            }
+        });
+    }
+
+    pushStat(mid, players, options = {}) {
+        const maxPerMachine = Math.max(1, Number(options.maxPerMachine) || 1440);
+        const retentionMs = Math.max(60_000, Number(options.retentionMs) || 7 * 24 * 60 * 60 * 1000);
+        return this._write(() => {
+            this.stmt.statInsert.run(mid, Date.now(), Math.max(0, Number.parseInt(players, 10) || 0));
+            this.stmt.statsPruneAge.run(Date.now() - retentionMs);
+            this.stmt.statsPrunePerMid.run(mid, maxPerMachine);
+        });
+    }
+
+    loadHistory(limit = 1000) {
+        return this.stmt.historyAll.all(Math.max(1, Number(limit) || 1000)).reverse().map(row => fromJson(row.data_json, {}));
+    }
+
+    saveHistory(data) {
+        const input = Array.isArray(data) ? data : [];
+        return this._write(() => {
+            this.stmt.historyDeleteAll.run();
+            for (const value of input) this.stmt.historyInsert.run(Number(value.ts_ms) || Date.now(), value.mid || null, value.event || null, value.ip || null, toJson(value));
+        });
+    }
+
+    pushHistory(value, options = {}) {
+        const item = value || {};
+        const maxRows = Math.max(100, Number(options.maxRows) || 10_000);
+        const retentionMs = Math.max(60_000, Number(options.retentionMs) || 90 * 24 * 60 * 60 * 1000);
+        return this._write(() => {
+            this.stmt.historyInsert.run(Number(item.ts_ms) || Date.now(), item.mid || null, item.event || null, item.ip || null, toJson(item));
+            this.stmt.historyPruneAge.run(Date.now() - retentionMs);
+            this.stmt.historyPruneCount.run(maxRows);
+        });
+    }
+
+    saveLicenseSession(sessionId, state) {
+        const row = { ...state, session_id: sessionId, data_json: toJson(state) };
+        return this._write(() => this.stmt.licenseSessionUpsert.run(row));
+    }
+
+    loadLicenseSession(sessionId) {
+        const row = this.stmt.licenseSessionGet.get(sessionId);
+        return row ? fromJson(row.data_json, null) : null;
+    }
+
+    loadActiveLicenseSessions(nowMs = Date.now()) {
+        return this.stmt.licenseSessionActive.all(nowMs).map(row => fromJson(row.data_json, null)).filter(Boolean);
+    }
+
+    deleteLicenseSession(sessionId) {
+        return this._write(() => this.stmt.licenseSessionDelete.run(sessionId).changes);
+    }
+
+    deleteLicenseSessionsForMachine(mid) {
+        return this._write(() => this.stmt.licenseSessionDeleteMid.run(mid).changes);
+    }
+
+    cleanupExpiredLicenseSessions(nowMs = Date.now()) {
+        return this._write(() => this.stmt.licenseSessionDeleteExpired.run(nowMs).changes);
+    }
+
+    getWebSession(sid) {
+        const row = this.stmt.webSessionGet.get(sid);
+        if (!row) return null;
+        if (row.expires_at <= Date.now()) {
+            this.deleteWebSession(sid);
+            return null;
+        }
+        return fromJson(row.data_json, null);
+    }
+
+    setWebSession(sid, sessionData, expiresAt) {
+        return this._write(() => this.stmt.webSessionUpsert.run(sid, expiresAt, toJson(sessionData), Date.now()));
+    }
+
+    deleteWebSession(sid) {
+        return this._write(() => this.stmt.webSessionDelete.run(sid).changes);
+    }
+
+    clearWebSessions() {
+        return this._write(() => this.stmt.webSessionClear.run().changes);
+    }
+
+    cleanupExpiredWebSessions(nowMs = Date.now()) {
+        return this._write(() => this.stmt.webSessionDeleteExpired.run(nowMs).changes);
+    }
+
+    loadAdminCredentials() {
+        const row = this.stmt.adminGet.get();
+        return row ? fromJson(row.data_json, null) : null;
+    }
+
+    saveAdminCredentials(value) {
+        return this._write(() => this.stmt.adminSet.run(toJson(value), Date.now()));
+    }
+
+    quickCheck() {
         try {
-            const del = this.db.prepare('DELETE FROM stats');
-            const ins = this.db.prepare('INSERT INTO stats(mid, ts, players) VALUES(?, ?, ?)');
-            const tx = this.db.transaction((all) => {
-                del.run();
-                for (const [mid, rows] of Object.entries(all || {})) {
-                    if (!Array.isArray(rows)) continue;
-                    for (const row of rows) if (Array.isArray(row) && row.length >= 2) ins.run(mid, Number(row[0]) || Date.now(), Number(row[1]) || 0);
-                }
-            });
-            tx(stats || {}); this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+            const rows = this.db.pragma('quick_check');
+            const result = rows.map(row => Object.values(row)[0]).join('; ');
+            return { ok: result === 'ok', result };
+        } catch (err) {
+            return { ok: false, result: err.message };
+        }
     }
-    pushStat(mid, players) {
-        this.db.prepare('INSERT INTO stats(mid, ts, players) VALUES(?, ?, ?)').run(mid, Date.now(), Math.max(0, Number.parseInt(players, 10) || 0));
+
+    checkpoint(mode = 'PASSIVE') {
+        return this.db.pragma(`wal_checkpoint(${String(mode).toUpperCase()})`);
     }
-    loadHistory() {
-        return this.db.prepare('SELECT data_json FROM history ORDER BY ts_ms DESC LIMIT 1000').all().reverse().map(r => fromJson(r.data_json, {}));
-    }
-    saveHistory(history) {
+
+    async backup(destination) {
+        fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+        await this.db.backup(destination);
+        const verifyDb = new BetterSqlite3(destination, { readonly: true, fileMustExist: true });
         try {
-            const del = this.db.prepare('DELETE FROM history');
-            const ins = this.db.prepare('INSERT INTO history(ts_ms, mid, event, ip, data_json) VALUES(?, ?, ?, ?, ?)');
-            const tx = this.db.transaction((rows) => { del.run(); (Array.isArray(rows) ? rows : []).forEach(item => ins.run(Number(item.ts_ms) || Date.now(), item.mid || null, item.event || null, item.ip || null, toJson(item))); });
-            tx(history); this.saveTotal++;
-        } catch (err) { this.saveFailTotal++; throw err; }
+            const rows = verifyDb.pragma('quick_check');
+            const result = rows.map(row => Object.values(row)[0]).join('; ');
+            if (result !== 'ok') throw new Error(`backup quick_check=${result}`);
+        } finally {
+            verifyDb.close();
+        }
+        try { fs.chmodSync(destination, 0o600); } catch {}
+        this.lastBackupAt = Date.now();
+        this.lastBackupFile = destination;
+        return destination;
     }
-    pushHistory(entry) {
-        const item = entry || {};
-        this.db.prepare('INSERT INTO history(ts_ms, mid, event, ip, data_json) VALUES(?, ?, ?, ?, ?)')
-            .run(Number(item.ts_ms) || Date.now(), item.mid || null, item.event || null, item.ip || null, toJson(item));
-    }
+
     health() {
+        const quick = this.quickCheck();
+        let journalMode = 'unknown';
+        try { journalMode = String(this.db.pragma('journal_mode', { simple: true })); } catch {}
         return {
             driver: 'sqlite',
             db_path: this.dbPath,
+            db_size_bytes: safeStatSize(this.dbPath),
+            wal_size_bytes: safeStatSize(`${this.dbPath}-wal`),
+            shm_size_bytes: safeStatSize(`${this.dbPath}-shm`),
+            journal_mode: journalMode,
+            quick_check: quick.result,
+            ok: quick.ok && journalMode.toLowerCase() === 'wal',
             saves_total: this.saveTotal,
             save_fail_total: this.saveFailTotal,
+            last_backup_at: this.lastBackupAt || null,
+            last_backup_file: this.lastBackupFile || null,
         };
+    }
+
+    close() {
+        if (!this.db) return;
+        try { this.checkpoint('TRUNCATE'); } catch {}
+        this.db.close();
+        this.db = null;
     }
 }
 
