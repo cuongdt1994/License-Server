@@ -1,5 +1,12 @@
 'use strict';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEGACY — JSON file-based store is no longer used.
+//
+// store.js only instantiates SqliteStore. This JsonStore is kept for reference
+// and potential disaster recovery / migration tooling.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const fs = require('fs');
 const path = require('path');
 

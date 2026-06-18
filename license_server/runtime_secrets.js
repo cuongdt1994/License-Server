@@ -1,5 +1,18 @@
 'use strict';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEPRECATED — This module is no longer used by server.js.
+//
+// Server.js now reads secrets directly from environment variables:
+//   - LICENSE_SESSION_SECRET (required, ≥48 bytes)
+//   - LICENSE_TCP_SECRET     (optional, else embedded client-sync key is used)
+//
+// TLS credentials are also read from env vars:
+//   - LICENSE_TLS_KEY_FILE, LICENSE_TLS_CERT_FILE, LICENSE_TLS_CA_FILE
+//
+// This file is kept for reference and backward compatibility only.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
