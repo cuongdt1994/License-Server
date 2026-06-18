@@ -189,7 +189,7 @@
             <% if (row.license_key) { %>
               <div class="text-xs text-muted mt-2 font-mono" style="display:flex;align-items:center;gap:4px">
                 🔑 <%= row.license_key.slice(0,8) %>…<%= row.license_key.slice(-4) %>
-                <button type="button" class="copy-key-btn" data-key="<%= row.license_key %>" title="Sao chép license key" aria-label="Copy license key">📋</button>
+                <button type="button" class="copy-key-btn" onclick="copyLicenseKey(this)" data-key="<%= row.license_key %>" title="Sao chép license key" aria-label="Copy license key">📋</button>
               </div>
             <% } %>
             <% if (Array.isArray(row.allowed_ips) && row.allowed_ips.length) { %>
@@ -534,23 +534,41 @@ document.addEventListener('click', event => {
 });
 
 // Copy license key to clipboard
-document.addEventListener('click', event => {
-  const btn = event.target.closest('.copy-key-btn');
-  if (!btn) return;
-  event.preventDefault();
-  const key = btn.dataset.key || '';
-  navigator.clipboard.writeText(key).then(() => {
-    btn.textContent = '✅';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = key; ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); btn.textContent = '✅'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500); } catch(e) {}
-    document.body.removeChild(ta);
-  });
-});
+function copyLicenseKey(btn) {
+  var key = (btn.dataset.key || '').trim();
+  if (!key) return;
+  // Ưu tiên dùng Clipboard API, fallback về textarea nếu không hỗ trợ
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(key).then(function() {
+      btn.textContent = '✅';
+      btn.classList.add('copied');
+      setTimeout(function() { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
+    }).catch(function() {
+      fallbackCopy(btn, key);
+    });
+  } else {
+    fallbackCopy(btn, key);
+  }
+}
+function fallbackCopy(btn, key) {
+  var ta = document.createElement('textarea');
+  ta.value = key;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '-9999px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    var ok = document.execCommand('copy');
+    if (ok) {
+      btn.textContent = '✅';
+      btn.classList.add('copied');
+      setTimeout(function() { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
+    }
+  } catch(e) {}
+  document.body.removeChild(ta);
+}
 </script>
 </body>
 </html>
