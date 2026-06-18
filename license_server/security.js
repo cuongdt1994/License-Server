@@ -80,8 +80,8 @@ function isValidMachineId(mid) {
 }
 
 function canViewPortalLicense(entry, providedKey) {
-    const stored = String(entry?.license_key || '').trim();
-    const provided = String(providedKey || '').trim();
+    const stored = String(entry?.license_key || '').trim().toUpperCase();
+    const provided = String(providedKey || '').trim().toUpperCase();
     return !!stored && !!provided && safeEqual(stored, provided);
 }
 

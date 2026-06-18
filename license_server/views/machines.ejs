@@ -33,6 +33,9 @@
     th.sortable.sorted { color: var(--primary); }
     .sort-arrow { position: absolute; right: 6px; font-size: .65rem; opacity: .4; }
     th.sortable.sorted .sort-arrow { opacity: 1; }
+    .copy-key-btn { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: .7rem; padding: 1px 4px; opacity: .5; transition: all .15s; line-height: 1; }
+    .copy-key-btn:hover { opacity: 1; border-color: var(--primary); background: rgba(99,102,241,.1); }
+    .copy-key-btn.copied { opacity: 1; border-color: #22c55e; background: rgba(34,197,94,.15); }
   </style>
 </head>
 <body>
@@ -184,7 +187,10 @@
             <code><%= row.mid %></code>
             <% if (row.auto) { %><span class="badge badge-muted" style="font-size:.65rem;margin-left:3px">Auto</span><% } %>
             <% if (row.license_key) { %>
-              <div class="text-xs text-muted mt-2 font-mono">🔑 <%= row.license_key.slice(0,8) %>…<%= row.license_key.slice(-4) %></div>
+              <div class="text-xs text-muted mt-2 font-mono" style="display:flex;align-items:center;gap:4px">
+                🔑 <%= row.license_key.slice(0,8) %>…<%= row.license_key.slice(-4) %>
+                <button type="button" class="copy-key-btn" data-key="<%= row.license_key %>" title="Sao chép license key" aria-label="Copy license key">📋</button>
+              </div>
             <% } %>
             <% if (Array.isArray(row.allowed_ips) && row.allowed_ips.length) { %>
               <div class="text-xs text-warning mt-2">🛡 IP locked (<%= row.allowed_ips.length %>)</div>
@@ -525,6 +531,25 @@ const machineActions = {
 document.addEventListener('click', event => {
   const btn = event.target.closest('[data-machine-action]');
   if (btn) { event.preventDefault(); const h = machineActions[btn.dataset.machineAction]; if (h) h(btn); }
+});
+
+// Copy license key to clipboard
+document.addEventListener('click', event => {
+  const btn = event.target.closest('.copy-key-btn');
+  if (!btn) return;
+  event.preventDefault();
+  const key = btn.dataset.key || '';
+  navigator.clipboard.writeText(key).then(() => {
+    btn.textContent = '✅';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = key; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); btn.textContent = '✅'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500); } catch(e) {}
+    document.body.removeChild(ta);
+  });
 });
 </script>
 </body>

@@ -74,6 +74,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'
 
 {
     assert.strictEqual(canViewPortalLicense({ license_key: 'ABC123' }, 'ABC123'), true);
+    assert.strictEqual(canViewPortalLicense({ license_key: 'ABC123' }, 'abc123'), true);
+    assert.strictEqual(canViewPortalLicense({ license_key: 'abc123' }, 'ABC123'), true);
     assert.strictEqual(canViewPortalLicense({ license_key: 'ABC123' }, 'wrong'), false);
     assert.strictEqual(canViewPortalLicense({}, ''), false);
     assert.strictEqual(canViewPortalLicense(null, 'ABC123'), false);
