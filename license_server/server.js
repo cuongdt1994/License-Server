@@ -118,6 +118,7 @@ const TLS_CERT_FILE = String(process.env.LICENSE_TLS_CERT_FILE || '').trim();
 const TLS_CA_FILE = String(process.env.LICENSE_TLS_CA_FILE || '').trim();
 const TLS_MIN_VERSION = String(process.env.LICENSE_TLS_MIN_VERSION || 'TLSv1.2').trim();
 const TLS_HANDSHAKE_TIMEOUT_MS = clampEnvInt(process.env.LICENSE_TLS_HANDSHAKE_TIMEOUT_MS, 5000, 1000, 30000);
+const TLS_HANDSHAKE_LOG_WINDOW_MS = clampEnvInt(process.env.LICENSE_TLS_HANDSHAKE_LOG_WINDOW_MS, 60000, 1000, 3600000);
 const TLS_MTLS = process.env.LICENSE_TLS_MTLS === '1';
 
 function clampEnvInt(value, fallback, min, max) {
@@ -1690,8 +1691,47 @@ function handleTcpRequest(socket, ip, raw) {
     tcpRlFail(ip);
 }
 
-let _tlsCertificateInfo = { valid_to: null, fingerprint256: null };
+let _tlsCertificateInfo = { valid_to: null, fingerprint256: null, subject_alt_name: null };
 const _tlsConnections = new Set();
+const _tlsHandshakeLog = new Map();
+
+function normalizeTlsFingerprint(value) {
+    return String(value || '').replace(/^sha256:/i, '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+}
+
+function classifyTlsClientError(err) {
+    const code = String(err?.code || '');
+    const message = String(err?.message || 'unknown');
+    const lower = `${code} ${message}`.toLowerCase();
+    if (lower.includes('wrong version number') ||
+        lower.includes('unknown protocol') ||
+        lower.includes('http request')) {
+        return {
+            kind: 'PLAINTEXT',
+            message: 'client sent raw TCP/HTTP to the TLS-only license port; rebuild/deploy the TLS license_check client',
+        };
+    }
+    if (lower.includes('certificate') || lower.includes('unknown ca') || lower.includes('bad certificate')) {
+        return { kind: 'CERTIFICATE', message };
+    }
+    if (lower.includes('handshake timeout')) return { kind: 'TIMEOUT', message };
+    return { kind: code || 'TLS_ERROR', message };
+}
+
+function shouldLogTlsHandshake(ip, kind) {
+    const nowMs = Date.now();
+    const key = `${ip}|${kind}`;
+    const previous = _tlsHandshakeLog.get(key) || 0;
+    if (nowMs - previous < TLS_HANDSHAKE_LOG_WINDOW_MS) return false;
+    _tlsHandshakeLog.set(key, nowMs);
+    if (_tlsHandshakeLog.size > 4096) {
+        for (const [k, ts] of _tlsHandshakeLog) {
+            if (nowMs - ts >= TLS_HANDSHAKE_LOG_WINDOW_MS) _tlsHandshakeLog.delete(k);
+            if (_tlsHandshakeLog.size <= 2048) break;
+        }
+    }
+    return true;
+}
 
 function readTlsMaterial() {
     if (!TLS_KEY_FILE || !TLS_CERT_FILE) {
@@ -1707,8 +1747,10 @@ function readTlsMaterial() {
     }
     _tlsCertificateInfo = {
         valid_to: new Date(validToMs).toISOString(),
-        fingerprint256: x509.fingerprint256 || null,
+        fingerprint256: normalizeTlsFingerprint(x509.fingerprint256 || ''),
         subject: x509.subject || null,
+        subject_alt_name: x509.subjectAltName || null,
+        serial_number: x509.serialNumber || null,
     };
     return {
         key,
@@ -1785,7 +1827,12 @@ tlsServer.maxConnections = clampEnvInt(process.env.LICENSE_TLS_MAX_CONNECTIONS, 
 tlsServer.on('tlsClientError', (err, socket) => {
     incMetric('license_tls_handshake_fail_total');
     const ip = normalizeIp(socket?.remoteAddress || '?');
-    log('WARNING', `TLS HANDSHAKE FAIL ${ip}: ${String(err?.message || 'unknown').slice(0, 180)}`);
+    const detail = classifyTlsClientError(err);
+    if (shouldLogTlsHandshake(ip, detail.kind)) {
+        const code = String(err?.code || '').slice(0, 80);
+        log('WARNING', `TLS HANDSHAKE ${detail.kind} ${ip}${code ? ` code=${code}` : ''}: ${String(detail.message).slice(0, 220)}`);
+    }
+    try { socket?.destroy(); } catch {}
 });
 tlsServer.on('error', (err) => {
     log('ERROR', `TLS listener error: ${err.message}`);
@@ -3179,7 +3226,10 @@ httpServer.listen(WEB_PORT, BIND_HOST, () => {
 
 tlsServer.listen(TLS_PORT, BIND_HOST, () => {
     startupState.tls = true;
-    log('INFO', `TLS license listener: ${BIND_HOST}:${TLS_PORT} min=${TLS_MIN_VERSION} AES-256-GCM payload valid_to=${_tlsCertificateInfo.valid_to}`);
+    log('INFO', `TLS license listener: ${BIND_HOST}:${TLS_PORT} min=${TLS_MIN_VERSION} AES-256-GCM payload valid_to=${_tlsCertificateInfo.valid_to} sha256=${_tlsCertificateInfo.fingerprint256 || 'n/a'}`);
+    if (!_tlsCertificateInfo.subject_alt_name) {
+        log('WARNING', 'TLS certificate has no Subject Alternative Name (SAN). The patched client supports a pinned/self-signed CN fallback, but a SAN certificate is recommended.');
+    }
     maybeSignalReady();
 });
 
