@@ -112,21 +112,6 @@ function createDeployManager(options = {}) {
         writeHistory(historyFile, history);
     }
 
-    // ── Pre-flight: kiểm tra git/pm2/npm có sẵn không ────────────────────────
-    async function preflight() {
-        const checks = [];
-        for (const [name, bin] of [['git', gitBin], ['npm', npmBin], ['pm2', pm2Bin]]) {
-            const step = await runStep(`Kiểm tra ${name}`, bin, ['--version']);
-            checks.push({ name, ok: step.code === 0, path: bin });
-        }
-        const failed = checks.filter(c => !c.ok);
-        if (failed.length) {
-            const list = failed.map(c => `${c.name} (${c.path})`).join(', ');
-            throw new Error(`Thiếu công cụ: ${list}. Cài đặt trước khi dùng update.`);
-        }
-        return checks;
-    }
-
     async function runUpdate() {
         if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         running = true;
@@ -144,9 +129,6 @@ function createDeployManager(options = {}) {
         last = result;
 
         try {
-            // 0. Pre-flight
-            try { await preflight(); } catch (e) { result.ok = false; result.steps.push({ name: 'Pre-flight', code: 1, stderr: e.message }); last = result; return result; }
-
             // 1. Commit hiện tại
             const before = await runStep('Commit trước update', gitBin, ['rev-parse', '--short', 'HEAD']);
             result.steps.push(before);
@@ -313,7 +295,7 @@ function createDeployManager(options = {}) {
         return { running, last, lastCheck, history };
     }
 
-    return { checkForUpdates, restartPm2Only, rollbackLast, runUpdate, status };
+    return { checkForUpdates, rememberResult, restartPm2Only, rollbackLast, runUpdate, status };
 }
 
 module.exports = { createDeployManager, HISTORY_LIMIT };

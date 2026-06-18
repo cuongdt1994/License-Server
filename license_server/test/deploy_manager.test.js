@@ -12,13 +12,10 @@ function tmpFile() {
 }
 
 (async () => {
-    // ── runUpdate: full flow (preflight → pull → install → restart) ──────
+    // ── runUpdate: full flow (pull → install → restart) ──────────────────
     {
         const commands = [];
         const outputs = {
-            'git --version': ['git version 2.34.1'],
-            'npm --version': ['10.0.0'],
-            'pm2 --version': ['5.3.0'],
             'git rev-parse --short HEAD': ['abc111', 'def222'],
             'git pull --ff-only': ['Updating abc111..def222\nFast-forward'],
             'git log -1 --pretty=format:%h %ci %s': ['def222 2026-06-12 01:00:00 +0700 Add feature'],
@@ -38,17 +35,13 @@ function tmpFile() {
 
         const result = await manager.runUpdate();
         assert.equal(result.ok, true);
-        // Preflight (3) + git rev-parse + pull + rev-parse + log + install + restart = 9
-        assert.equal(commands.length, 9);
-        assert.equal(commands[0][0], 'git');       // --version
-        assert.equal(commands[1][0], 'npm');       // --version
-        assert.equal(commands[2][0], 'pm2');        // --version
-        assert.equal(commands[3][0], 'git');        // rev-parse before
-        assert.equal(commands[4][0], 'git');        // pull
-        assert.equal(commands[5][0], 'git');        // rev-parse after
-        assert.equal(commands[6][0], 'git');        // log
-        assert.equal(commands[7][0], 'npm');        // install
-        assert.equal(commands[8][0], 'pm2');         // restart
+        assert.equal(commands.length, 6);
+        assert.equal(commands[0][0], 'git');   // rev-parse before
+        assert.equal(commands[1][0], 'git');   // pull
+        assert.equal(commands[2][0], 'git');   // rev-parse after
+        assert.equal(commands[3][0], 'git');   // log
+        assert.equal(commands[4][0], 'npm');   // install
+        assert.equal(commands[5][0], 'pm2');   // restart
         assert.equal(result.beforeCommit, 'abc111');
         assert.equal(result.afterCommit, 'def222');
         assert.equal(result.changed, true);
@@ -120,23 +113,22 @@ function tmpFile() {
         assert.equal(cmds[2], 'pm2 restart all --update-env');
     }
 
-    // ── missing PM2 → fail with hint ─────────────────────────────────────
+    // ── PM2 restart fails → result.ok=false ─────────────────────────────
     {
         const mgr = createDeployManager({
             cwd: '/app',
-            pm2Bin: 'missing-pm2',
+            historyFile: tmpFile(),
             runCommand: async (cmd, args) => {
                 const key = [cmd].concat(args).join(' ');
-                if (key === 'missing-pm2 --version') return { code: 1, stdout: '', stderr: 'command not found' };
-                if (key === 'git --version') return { code: 0, stdout: 'ok', stderr: '' };
-                if (key === 'npm --version') return { code: 0, stdout: 'ok', stderr: '' };
-                return { code: 0, stdout: '', stderr: '' };
+                if (key.endsWith('restart all --update-env')) return { code: 1, stdout: '', stderr: 'pm2 not found' };
+                if (key === 'git rev-parse --short HEAD') return { code: 0, stdout: 'abc111', stderr: '' };
+                if (key === 'git pull --ff-only') return { code: 0, stdout: 'Updated.', stderr: '' };
+                return { code: 0, stdout: 'abc111', stderr: '' };
             },
-            historyFile: tmpFile(),
         });
         const result = await mgr.runUpdate();
+        // git steps ok, no changes → skip npm install, pm2 restart fails
         assert.equal(result.ok, false);
-        assert.match(JSON.stringify(result.steps), /pm2/);
     }
 
     // ── restartPm2Only ───────────────────────────────────────────────────
