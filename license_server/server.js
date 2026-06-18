@@ -47,6 +47,7 @@ const {
 const agent     = require('./agent_manager');
 const commandPolicy = require('./command_policy');
 const { createDeployManager } = require('./deploy_manager');
+const { createStore } = require('./store');
 
 // ── Cấu hình ──────────────────────────────────────────────────────────────────
 const RUNTIME         = buildRuntimeConfig();
@@ -198,11 +199,12 @@ const TIERS = {
 // Plaintext format: "<unix_ms>|<payload>"  → reject nếu lệch > REPLAY_WINDOW_MS
 const CIPHER = 'aes-256-gcm';
 const REPLAY_WINDOW_MS = 30 * 1000;        // 30s
-const MAX_TCP_FRAME_BYTES = 16 * 1024;
+const MAX_TCP_FRAME_BYTES = 8 * 1024;
 const MAX_SEEN_NONCES = 20000;
 const TCP_SOCKET_TIMEOUT_MS = 8000;
 const TCP_MAX_BUFFER_BYTES = MAX_TCP_FRAME_BYTES * 2 + 128;
 const seenNonces = new Map();              // iv_hex → expireAt (chống replay đúng nghĩa)
+let lastTcpDecryptError = 'unknown';
 
 function purgeSeenNonces(nowMs = Date.now()) {
     for (const [k, exp] of seenNonces) if (exp <= nowMs) seenNonces.delete(k);
@@ -219,6 +221,7 @@ function tcpEncrypt(plain) {
 }
 
 function tcpDecrypt(line) {
+    lastTcpDecryptError = 'invalid';
     try {
         const t = String(line || '').trim();
         if (!t || t.length > MAX_TCP_FRAME_BYTES * 2) return null;
@@ -243,10 +246,10 @@ function tcpDecrypt(line) {
         if (!/^\d+$/.test(tsRaw)) return null;
         const ts = Number.parseInt(tsRaw, 10);
         const nowMs = Date.now();
-        if (!Number.isFinite(ts) || Math.abs(nowMs - ts) > REPLAY_WINDOW_MS) return null;
+        if (!Number.isFinite(ts) || Math.abs(nowMs - ts) > REPLAY_WINDOW_MS) { lastTcpDecryptError = 'replay'; return null; }
 
         purgeSeenNonces(nowMs);
-        if (seenNonces.has(ivHex)) return null;
+        if (seenNonces.has(ivHex)) { lastTcpDecryptError = 'replay'; return null; }
         seenNonces.set(ivHex, nowMs + REPLAY_WINDOW_MS);
 
         return out.slice(sep + 1);
@@ -305,8 +308,7 @@ function tcpRlSuccess(ip) { delete tcpAttempts[ip]; }
 
 // ── IP Ban ────────────────────────────────────────────────────────────────────
 function loadBans() {
-    if (!fs.existsSync(BAN_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(BAN_FILE, 'utf8')); } catch { return {}; }
+    return getStore().loadBans();
 }
 function writeFilePrivateAtomic(file, payload) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -326,8 +328,8 @@ function saveJsonPrivate(file, data, pretty = true) {
     writeFilePrivateAtomic(file, payload);
 }
 function saveBans(b) {
-    saveJsonPrivate(BAN_FILE, b);
-    updateChecksum(CHECKSUM_FILE, BAN_FILE);
+    getStore().saveBans(b || {});
+    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, BAN_FILE);
 }
 function normalizeIp(ip) {
     let v = String(ip || '?').trim();
@@ -395,6 +397,89 @@ function expiryInfo(entry) {
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
+
+// ── Store adapter (JSON default, SQLite optional) ─────────────────────────────
+let _storeInstance = null;
+function getStore() {
+    if (_storeInstance) return _storeInstance;
+    _storeInstance = createStore({
+        driver: process.env.LICENSE_DB_DRIVER || 'json',
+        dataDir: DATA_DIR,
+        log: (level, msg) => log(level || 'INFO', msg),
+        fallbackToJson: process.env.LICENSE_DB_SQLITE_STRICT !== '1',
+    });
+    return _storeInstance;
+}
+
+// ── Prometheus-style metrics ─────────────────────────────────────────────────
+const metrics = Object.create(null);
+const METRIC_DEFS = {
+    license_active_machines: ['gauge', 'Currently online machines.'],
+    license_total_machines: ['gauge', 'Total registered machines.'],
+    license_revoked_machines: ['gauge', 'Total revoked machines.'],
+    license_expired_machines: ['gauge', 'Total expired machines.'],
+    license_total_players: ['gauge', 'Total online players.'],
+    license_sse_clients: ['gauge', 'Connected SSE dashboard clients.'],
+    license_sessions_active: ['gauge', 'Active AUTH2 sessions in memory.'],
+    license_sessions_created_total: ['counter', 'Total AUTH2 sessions created.'],
+    license_sessions_expired_total: ['counter', 'Total AUTH2 sessions expired or revoked.'],
+    license_offline_leases_issued_total: ['counter', 'Total signed offline leases issued.'],
+    license_tcp_auth_ok_total: ['counter', 'Legacy AUTH successes.'],
+    license_tcp_auth_deny_total: ['counter', 'Legacy AUTH denials.'],
+    license_tcp_auth2_ok_total: ['counter', 'AUTH2 successes.'],
+    license_tcp_auth2_deny_total: ['counter', 'AUTH2 denials.'],
+    license_tcp_hb_ok_total: ['counter', 'Legacy HB successes.'],
+    license_tcp_hb_deny_total: ['counter', 'Legacy HB denials.'],
+    license_tcp_hb2_ok_total: ['counter', 'HB2 successes.'],
+    license_tcp_hb2_deny_total: ['counter', 'HB2 denials.'],
+    license_tcp_decrypt_fail_total: ['counter', 'TCP AES-GCM decrypt or frame validation failures.'],
+    license_tcp_replay_fail_total: ['counter', 'TCP timestamp/nonce replay failures.'],
+    license_tcp_rate_limited_total: ['counter', 'TCP requests rejected by rate or concurrency limits.'],
+    license_db_save_total: ['counter', 'Store save operations.'],
+    license_db_save_fail_total: ['counter', 'Store save failures.'],
+    license_process_uptime_seconds: ['gauge', 'Node.js process uptime in seconds.'],
+    license_process_rss_bytes: ['gauge', 'Node.js RSS memory usage.'],
+    license_process_heap_used_bytes: ['gauge', 'Node.js heap used bytes.'],
+};
+for (const name of Object.keys(METRIC_DEFS)) metrics[name] = 0;
+function incMetric(name, delta = 1) {
+    try { metrics[name] = (Number(metrics[name]) || 0) + delta; } catch {}
+}
+function setMetric(name, value) {
+    try { metrics[name] = Number.isFinite(Number(value)) ? Number(value) : 0; } catch {}
+}
+function collectDynamicMetrics() {
+    try {
+        const db = loadDB();
+        setMetric('license_active_machines', Object.keys(active).length);
+        setMetric('license_total_machines', Object.keys(db).length);
+        setMetric('license_revoked_machines', Object.values(db).filter(v => v && v.revoked).length);
+        setMetric('license_expired_machines', Object.values(db).filter(v => v && !v.revoked && isExpired(v)).length);
+        setMetric('license_total_players', Object.values(active).reduce((sum, row) => sum + (Number(row.players) || 0), 0));
+    } catch {}
+    setMetric('license_sse_clients', sseClientCount());
+    setMetric('license_sessions_active', sessions.size);
+    try {
+        const health = getStore().health ? getStore().health() : {};
+        if (Number.isFinite(Number(health.saves_total))) setMetric('license_db_save_total', health.saves_total);
+        if (Number.isFinite(Number(health.save_fail_total))) setMetric('license_db_save_fail_total', health.save_fail_total);
+    } catch {}
+    const mem = process.memoryUsage();
+    setMetric('license_process_uptime_seconds', Math.floor(process.uptime()));
+    setMetric('license_process_rss_bytes', mem.rss);
+    setMetric('license_process_heap_used_bytes', mem.heapUsed);
+}
+function renderMetrics() {
+    collectDynamicMetrics();
+    const lines = [];
+    for (const [name, [type, help]] of Object.entries(METRIC_DEFS)) {
+        lines.push(`# HELP ${name} ${help}`);
+        lines.push(`# TYPE ${name} ${type}`);
+        lines.push(`${name} ${Number(metrics[name]) || 0}`);
+    }
+    return lines.join('\n') + '\n';
+}
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 function loadAdminCredentials() {
     const envUser = (process.env.LICENSE_WEB_USER || '').trim();
@@ -445,39 +530,35 @@ function audit(req, action, details = {}) {
 
 // ── Database ──────────────────────────────────────────────────────────────────
 function loadDB() {
-    if (!fs.existsSync(DB_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return {}; }
+    return getStore().loadDB();
 }
 function saveDB(db) {
-    saveJsonPrivate(DB_FILE, db);
-    updateChecksum(CHECKSUM_FILE, DB_FILE);
+    getStore().saveDB(db || {});
+    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, DB_FILE);
 }
 function now() { return new Date().toLocaleString('sv').replace('T', ' '); }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
-    if (!fs.existsSync(SETTINGS_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
+    return getStore().loadSettings();
 }
 function saveSettings(s) {
-    saveJsonPrivate(SETTINGS_FILE, s);
-    updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
+    getStore().saveSettings(s || {});
+    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, SETTINGS_FILE);
 }
 
 // ── Plans ─────────────────────────────────────────────────────────────────────
 function loadPlans() {
-    if (!fs.existsSync(PLANS_FILE)) return [];
-    try { return JSON.parse(fs.readFileSync(PLANS_FILE, 'utf8')); } catch { return []; }
+    return getStore().loadPlans();
 }
 function savePlans(p) {
-    saveJsonPrivate(PLANS_FILE, p);
-    updateChecksum(CHECKSUM_FILE, PLANS_FILE);
+    getStore().savePlans(Array.isArray(p) ? p : []);
+    if (getStore().driver === 'json') updateChecksum(CHECKSUM_FILE, PLANS_FILE);
 }
 
 // ── Stats (time-series) ───────────────────────────────────────────────────────
 function loadStats() {
-    if (!fs.existsSync(STATS_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(STATS_FILE, 'utf8')); } catch { return {}; }
+    return getStore().loadStats();
 }
 const _lastStatPush = new Map();
 function pushStat(mid, players) {
@@ -487,24 +568,16 @@ function pushStat(mid, players) {
     if (prev && ts - prev.ts < STATS_SAMPLE_MS && prev.players === normalizedPlayers) return;
     if (prev && ts - prev.ts < 10 * 1000) return; // hard cap disk writes when player count churns
 
-    const s = loadStats();
-    if (!Array.isArray(s[mid])) s[mid] = [];
-    s[mid].push([ts, normalizedPlayers]);
-    if (s[mid].length > MAX_STATS_PER_MACHINE) s[mid] = s[mid].slice(-MAX_STATS_PER_MACHINE);
-    saveJsonPrivate(STATS_FILE, s, false);
+    getStore().pushStat(mid, normalizedPlayers, { maxPerMachine: MAX_STATS_PER_MACHINE });
     _lastStatPush.set(mid, { ts, players: normalizedPlayers });
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
 function loadHistory() {
-    if (!fs.existsSync(HISTORY_FILE)) return [];
-    try { return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')); } catch { return []; }
+    return getStore().loadHistory();
 }
 function pushHistory(entry) {
-    const h = loadHistory();
-    h.push({ ...entry, ts: now(), ts_ms: Date.now() });
-    if (h.length > MAX_HISTORY) h.splice(0, h.length - MAX_HISTORY);
-    saveJsonPrivate(HISTORY_FILE, h, false);
+    getStore().pushHistory({ ...entry, ts: now(), ts_ms: Date.now() }, { maxHistory: MAX_HISTORY });
 }
 
 // ── License key generation ────────────────────────────────────────────────────
@@ -564,6 +637,7 @@ function sendTelegram(msg) {
 
 // ── Webhook dispatch ──────────────────────────────────────────────────────────
 function dispatchWebhook(event, data) {
+    try { sseBroadcast(event, data || {}); } catch {}
     const s = loadSettings();
     if (!Array.isArray(s.webhooks) || !s.webhooks.length) return;
     const payload = JSON.stringify({ event, data, ts: Date.now() });
@@ -667,6 +741,267 @@ function shouldLogHeartbeat(mid) {
 function makeToken(mid, maxPl) {
     return crypto.createHmac('sha256', SECRET_KEY).update(`${mid}|${maxPl}`).digest('hex');
 }
+
+// ── AUTH2 sessions + signed offline leases ──────────────────────────────────
+const SESSION_LIFETIME_MS = clampInt(process.env.LICENSE_SESSION_TTL_MS, 10 * 60 * 1000, 1000, 24 * 60 * 60 * 1000);
+const sessions = new Map(); // session_id -> session state; token stored as hash only
+
+function hashSessionToken(token) {
+    return crypto.createHmac('sha256', SECRET_KEY).update(`session-token-v2|${token}`).digest('hex');
+}
+function timingSafeEqualHex(a, b) {
+    if (!isHexString(String(a || '')) || !isHexString(String(b || ''))) return false;
+    const aa = Buffer.from(String(a), 'hex');
+    const bb = Buffer.from(String(b), 'hex');
+    if (aa.length !== bb.length || aa.length === 0) return false;
+    try { return crypto.timingSafeEqual(aa, bb); } catch { return false; }
+}
+function licenseKeyHash(key) {
+    return crypto.createHmac('sha256', SECRET_KEY).update(`license-key|${normalizeLicenseKey(key || '')}`).digest('hex');
+}
+function createSession(mid, ip, entry, maxPlayers) {
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const nowMs = Date.now();
+    const state = {
+        mid,
+        token_hash: hashSessionToken(sessionToken),
+        ip,
+        risk_flags: [],
+        created_at: nowMs,
+        expires_at: nowMs + SESSION_LIFETIME_MS,
+        last_seen: nowMs,
+        max_players_snapshot: maxPlayers,
+        license_key_hash_snapshot: licenseKeyHash(entry?.license_key || ''),
+    };
+    sessions.set(sessionId, state);
+    incMetric('license_sessions_created_total');
+    sseBroadcast('session.created', { mid, session_id: sessionId, ip, expires_at: state.expires_at });
+    return { sessionId, sessionToken, expiresAt: state.expires_at };
+}
+function validateSession(mid, sessionId, sessionToken, ip) {
+    const sid = String(sessionId || '').trim();
+    const st = String(sessionToken || '').trim();
+    if (!isHexLen(sid, 32) || !isHexLen(st, 64)) return { ok: false, reason: 'DENY_SESSION' };
+    const state = sessions.get(sid);
+    if (!state) return { ok: false, reason: 'DENY_SESSION' };
+    if (state.mid !== mid) return { ok: false, reason: 'DENY_SESSION' };
+    if (Date.now() > state.expires_at) {
+        sessions.delete(sid);
+        incMetric('license_sessions_expired_total');
+        sseBroadcast('session.expired', { mid, session_id: sid, reason: 'ttl' });
+        return { ok: false, reason: 'SESSION_EXPIRED' };
+    }
+    if (!timingSafeEqualHex(hashSessionToken(st), state.token_hash)) return { ok: false, reason: 'DENY_SESSION' };
+    if (state.ip && ip && state.ip !== ip && !state.risk_flags.includes('ip_changed')) {
+        state.risk_flags.push('ip_changed');
+        log('WARNING', `SESSION IP-CHANGE [${mid}] sid=${sid.slice(0, 8)} prev=${state.ip} new=${ip}`);
+        sseBroadcast('machine.multi_ip', { mid, prev_ip: state.ip, new_ip: ip, session_id: sid });
+    }
+    return { ok: true, session_id: sid, state };
+}
+function revokeSessionsForMachine(mid) {
+    let n = 0;
+    for (const [sid, state] of sessions) {
+        if (state.mid === mid) {
+            sessions.delete(sid);
+            n++;
+            sseBroadcast('session.expired', { mid, session_id: sid, reason: 'revoke' });
+        }
+    }
+    if (n) incMetric('license_sessions_expired_total', n);
+    return n;
+}
+function cleanupExpiredSessions() {
+    const nowMs = Date.now();
+    let n = 0;
+    for (const [sid, state] of sessions) {
+        if (state.expires_at <= nowMs) {
+            sessions.delete(sid);
+            n++;
+            sseBroadcast('session.expired', { mid: state.mid, session_id: sid, reason: 'ttl' });
+        }
+    }
+    if (n) incMetric('license_sessions_expired_total', n);
+}
+setInterval(cleanupExpiredSessions, 60 * 1000).unref();
+
+function base64UrlEncodeBuffer(buf) {
+    return Buffer.from(buf).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function base64UrlEncodeJson(obj) {
+    return base64UrlEncodeBuffer(Buffer.from(JSON.stringify(obj), 'utf8'));
+}
+function getOfflineLeaseTtlMs(entry) {
+    const tier = entry?.tier || 'basic';
+    const defaults = {
+        trial: 30 * 60 * 1000,
+        basic: 6 * 60 * 60 * 1000,
+        pro: 24 * 60 * 60 * 1000,
+        unlimited: 48 * 60 * 60 * 1000,
+    };
+    const s = loadSettings();
+    const byMs = s.offline_lease_ttl_ms_by_tier || s.lease_ttl_ms_by_tier || {};
+    const byHours = s.offline_lease_ttl_hours_by_tier || s.lease_ttl_hours_by_tier || {};
+    if (Number.isFinite(Number(byMs[tier])) && Number(byMs[tier]) > 0) return Number(byMs[tier]);
+    if (Number.isFinite(Number(byHours[tier])) && Number(byHours[tier]) > 0) return Number(byHours[tier]) * 60 * 60 * 1000;
+    return defaults[tier] || defaults.basic;
+}
+function signOfflineLease(payloadB64) {
+    return base64UrlEncodeBuffer(crypto.createHmac('sha256', SECRET_KEY).update(payloadB64).digest());
+}
+function issueOfflineLease(mid, entry, maxPlayers) {
+    const issuedAt = Date.now();
+    const payload = {
+        v: 1,
+        alg: 'HS256',
+        mid,
+        license_key_hash: licenseKeyHash(entry?.license_key || ''),
+        max_players: maxPlayers,
+        tier: entry?.tier || 'basic',
+        issued_at: issuedAt,
+        expires_at: issuedAt + getOfflineLeaseTtlMs(entry),
+        server_time: issuedAt,
+        lease_id: crypto.randomBytes(12).toString('hex'),
+        features: entry?.features && typeof entry.features === 'object' ? entry.features : {},
+    };
+    const payloadB64 = base64UrlEncodeJson(payload);
+    const lease = `${payloadB64}.${signOfflineLease(payloadB64)}`;
+    incMetric('license_offline_leases_issued_total');
+    sseBroadcast('lease.issued', { mid, lease_id: payload.lease_id, expires_at: payload.expires_at });
+    return lease;
+}
+function parseTagged(parts) {
+    const out = {};
+    for (const part of parts || []) {
+        const i = String(part).indexOf(':');
+        if (i <= 0) continue;
+        out[String(part.slice(0, i)).toUpperCase()] = String(part.slice(i + 1));
+    }
+    return out;
+}
+function licenseKeyAccepted(entry, sentKey, justRegistered) {
+    const currentKey = normalizeLicenseKey(entry?.license_key || '');
+    if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
+        return { ok: false, reason: 'missing key in strict mode', needSyncKey: false };
+    }
+    if (!currentKey || justRegistered) return { ok: true, needSyncKey: !!currentKey && justRegistered };
+    const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
+    const validKey = !!sentKey && (sentKey === currentKey || prev.some(p => {
+        const prevKey = normalizeLicenseKey(p?.key || '');
+        return prevKey && prevKey === sentKey && (!p.expires_at || p.expires_at > Date.now());
+    }));
+    const shouldBootstrapKey = canBootstrapLicenseKey(entry, {
+        sentKey,
+        justRegistered,
+        enabled: licenseKeyBootstrapEnabled(),
+    });
+    if (!validKey && !shouldBootstrapKey) return { ok: false, reason: 'wrong key', needSyncKey: false };
+    return { ok: true, needSyncKey: shouldBootstrapKey || (!!sentKey && sentKey !== currentKey) };
+}
+function ipAllowedForEntry(entry, ip) {
+    if (!Array.isArray(entry?.allowed_ips) || entry.allowed_ips.length === 0) return true;
+    return entry.allowed_ips.some(a => {
+        const rule = String(a || '').trim();
+        return rule === ip || (rule.endsWith('.*') && ip.startsWith(rule.slice(0, -1)));
+    });
+}
+function markMachineOnline(mid, ip, entry, maxPl, players = null) {
+    if (active[mid] && active[mid].ip !== ip) {
+        log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
+        sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
+        dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
+    }
+    const wasOnline = !!active[mid];
+    active[mid] = {
+        ...active[mid],
+        ip,
+        players: players === null ? (active[mid]?.players || 0) : players,
+        last_seen: now(),
+        uptime_start: active[mid]?.uptime_start || now(),
+    };
+    if (!wasOnline) {
+        pushHistory({ mid, event: 'online', ip });
+        sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry?.tier || 'basic'} | Max: ${maxPl}`);
+        dispatchWebhook('machine.online', { mid, ip, tier: entry?.tier || 'basic', max_players: maxPl });
+    }
+    getGeoIP(ip).then(geo => {
+        if (geo && active[mid]) {
+            active[mid].geo = geo;
+            sseBroadcast('machine.geo', { mid, ip, geo });
+        }
+    });
+}
+function buildHeartbeatExtras(mid, entry, sessionState = null) {
+    let extra = '';
+    const pendingMax = _pendingMaxPlayers.get(mid);
+    const pendingKey = normalizeLicenseKey(_pendingKey.get(mid) || '');
+    const currentKey = normalizeLicenseKey(entry?.license_key || '');
+    let keyToPush = pendingKey;
+    if (!keyToPush && sessionState && currentKey && licenseKeyHash(currentKey) !== sessionState.license_key_hash_snapshot) {
+        keyToPush = currentKey;
+    }
+    if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= MAX_PLAYERS_LIMIT) {
+        extra += ` CFGMAX:${pendingMax}`;
+        _pendingMaxPlayers.delete(mid);
+        log('INFO', `HB CFGMAX   [${mid}]  max_players -> ${pendingMax} (real-time push)`);
+        sseBroadcast('cfgmax.synced', { mid, max_players: pendingMax });
+    }
+    if (keyToPush) {
+        extra += ` KEY:${keyToPush}`;
+        _pendingKey.delete(mid);
+        log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
+        sseBroadcast('key.synced', { mid });
+    }
+    return extra;
+}
+function processHeartbeatState(mid, ip, entry, cnt, maxPl) {
+    let dbChanged = false;
+    if (cnt > maxPl) {
+        if (!entry._alertOver) {
+            entry._alertOver = true;
+            dbChanged = true;
+            sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tự chặn login mới —`);
+            dispatchWebhook('players.over', { mid, ip, players: cnt, max_players: maxPl });
+        }
+        log('WARNING', `HB OVER     ${ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit, không revoke)`);
+    } else if (cnt < Math.floor(maxPl * 0.9) && entry._alertOver) {
+        entry._alertOver = false;
+        dbChanged = true;
+    }
+    if (cnt > (entry.peak_players || 0)) {
+        entry.peak_players = cnt;
+        dbChanged = true;
+    }
+    if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
+        entry._alert80 = true;
+        dbChanged = true;
+        sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
+        dispatchWebhook('players.high', { mid, ip, players: cnt, max_players: maxPl });
+    } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7) && entry._alert80) {
+        entry._alert80 = false;
+        dbChanged = true;
+    }
+    const nowMs = Date.now();
+    if (!entry.last_hb_ts || nowMs - entry.last_hb_ts >= HB_DB_TOUCH_MS) {
+        entry.last_hb_ts = nowMs;
+        dbChanged = true;
+    }
+    return dbChanged;
+}
+
+// ── SSE dashboard realtime ───────────────────────────────────────────────────
+const sseClients = new Set();
+function sseBroadcast(event, data = {}) {
+    const payload = `event: ${event}\ndata: ${JSON.stringify({ ...data, ts: Date.now() })}\n\n`;
+    for (const res of Array.from(sseClients)) {
+        try { res.write(payload); } catch { sseClients.delete(res); }
+    }
+}
+function wsBroadcast(event, data = {}) { sseBroadcast(event, data); }
+function sseClientCount() { return sseClients.size; }
+setInterval(() => sseBroadcast('ping', { ts: Date.now() }), 25 * 1000).unref();
+setInterval(() => { collectDynamicMetrics(); sseBroadcast('metrics.updated', { active: metrics.license_active_machines, players: metrics.license_total_players }); }, 15 * 1000).unref();
 
 
 // ── Offline detector (5 min timeout) ─────────────────────────────────────────
@@ -793,6 +1128,7 @@ function tcpReply(socket, plain) {
 
 function handleTcpRequest(socket, ip, raw) {
     if (tcpRlBlocked(ip)) {
+        incMetric('license_tcp_rate_limited_total');
         tcpReply(socket, 'DENY');
         return;
     }
@@ -805,6 +1141,8 @@ function handleTcpRequest(socket, ip, raw) {
 
     const plain = tcpDecrypt(raw);
     if (!plain) {
+        if (lastTcpDecryptError === 'replay') incMetric('license_tcp_replay_fail_total');
+        else incMetric('license_tcp_decrypt_fail_total');
         log('WARNING', `TCP DECRYPT FAIL  ${ip}`);
         tcpRlFail(ip);
         socket.end();
@@ -818,6 +1156,89 @@ function handleTcpRequest(socket, ip, raw) {
 
     const parts = plain.trim().split(/\s+/);
     const cmd = parts[0]?.toUpperCase();
+
+    // ── AUTH2 (session token + signed offline lease) ─────────────────────
+    if (cmd === 'AUTH2' && parts[1]) {
+        const mid = parts[1];
+        const sentKey = normalizeLicenseKey(parts[2] || '');
+        const deny = (payload, reason) => {
+            tcpReply(socket, payload || 'DENY');
+            incMetric('license_tcp_auth2_deny_total');
+            log('WARNING', `AUTH2 DENY  ${ip}  [${mid}]  (${reason})`);
+            tcpRlFail(ip);
+        };
+
+        if (!isValidMachineId(mid)) return deny('DENY', 'invalid machine id');
+
+        const db = loadDB();
+        let entry = db[mid];
+        let justRegistered = false;
+
+        if (!entry) {
+            if (!autoRegisterEnabled()) return deny('DENY', 'not registered');
+            const newKey = generateLicenseKey();
+            entry = {
+                max_players: DEFAULT_PLAYERS,
+                tier: 'basic',
+                note: 'Auto-registered',
+                added: now(),
+                revoked: false,
+                auto: true,
+                peak_players: 0,
+                license_key: newKey,
+                zombie: false,
+            };
+            db[mid] = entry;
+            saveDB(db);
+            justRegistered = true;
+            log('INFO', `AUTH2 AUTO  ${ip}  [${mid}]  tier=basic max=${DEFAULT_PLAYERS}  key=${newKey}`);
+            sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: ${DEFAULT_PLAYERS} players · Không giới hạn ngày\nKey: ${newKey}`);
+        }
+
+        normalizeMachineEntry(entry);
+        if (entry.revoked) {
+            revokeSessionsForMachine(mid);
+            delete active[mid];
+            return deny('REVOKE', 'revoked');
+        }
+        if (isExpired(entry)) {
+            revokeSessionsForMachine(mid);
+            delete active[mid];
+            dispatchWebhook('license.expired', { mid, ip });
+            return deny('EXPIRED', 'expired');
+        }
+
+        const keyCheck = licenseKeyAccepted(entry, sentKey, justRegistered);
+        if (!keyCheck.ok) return deny('DENY', keyCheck.reason);
+        if (!ipAllowedForEntry(entry, ip)) return deny('DENY', 'IP not whitelisted');
+
+        const maxPl = getMaxPlayers(entry);
+        const token = makeToken(mid, maxPl);
+        const sess = createSession(mid, ip, entry, maxPl);
+        const lease = issueOfflineLease(mid, entry, maxPl);
+        let agentTok = '';
+        try { agentTok = agent.getOrCreateToken(mid) || ''; }
+        catch (e) { log('WARNING', `AGENT TOKEN FAIL [${mid}] ${e.message}`); }
+        if (!isValidAgentToken(agentTok)) agentTok = '';
+
+        const currentKey = normalizeLicenseKey(entry.license_key || '');
+        const needSyncKey = justRegistered || keyCheck.needSyncKey || (currentKey && sentKey && sentKey !== currentKey);
+        let okPayload = `OK2 ${maxPl} ${token} SID:${sess.sessionId} ST:${sess.sessionToken} EXP:${sess.expiresAt} LEASE:${lease} SERVER_TIME:${Date.now()} CFGMAX:${maxPl}`;
+        if (needSyncKey && currentKey) okPayload += ` KEY:${currentKey}`;
+        if (agentTok) okPayload += ` AGENT:${agentTok}`;
+        tcpReply(socket, okPayload);
+
+        markMachineOnline(mid, ip, entry, maxPl);
+        if (entry.zombie) {
+            entry.zombie = false;
+            db[mid] = entry;
+            saveDB(db);
+        }
+        tcpRlSuccess(ip);
+        incMetric('license_tcp_auth2_ok_total');
+        log('INFO', `AUTH2 OK    ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl} sid=${sess.sessionId.slice(0, 8)}`);
+        return;
+    }
 
     // ── AUTH ──────────────────────────────────────────────────────────────
     if (cmd === 'AUTH' && parts[1]) {
@@ -861,12 +1282,14 @@ function handleTcpRequest(socket, ip, raw) {
         }
 
         if (entry.revoked) {
+            revokeSessionsForMachine(mid);
             tcpReply(socket, 'DENY');
             log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (revoked)`);
             tcpRlFail(ip);
             return;
         }
         if (isExpired(entry)) {
+            revokeSessionsForMachine(mid);
             tcpReply(socket, 'DENY');
             log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (expired)`);
             dispatchWebhook('license.expired', { mid, ip });
@@ -959,6 +1382,7 @@ function handleTcpRequest(socket, ip, raw) {
             saveDB(db);
         }
         tcpRlSuccess(ip);
+        incMetric('license_tcp_auth_ok_total');
         log('INFO', `AUTH OK     ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
 
         getGeoIP(ip).then(geo => {
@@ -966,6 +1390,84 @@ function handleTcpRequest(socket, ip, raw) {
                 active[mid].geo = geo;
             }
         });
+        return;
+    }
+
+    // ── HB2 (session token heartbeat, no license_key on wire) ─────────────
+    if (cmd === 'HB2' && parts[1] && parts[2] !== undefined) {
+        const mid = parts[1];
+        const rawCnt = Number.parseInt(parts[2], 10);
+        const cnt = Number.isFinite(rawCnt) ? Math.max(0, Math.min(rawCnt, MAX_PLAYERS_LIMIT)) : 0;
+        const tagged = parseTagged(parts.slice(3));
+        const deny = (payload, reason) => {
+            tcpReply(socket, payload || 'DENY_SESSION');
+            incMetric('license_tcp_hb2_deny_total');
+            log('WARNING', `HB2 DENY    ${ip}  [${mid}]  (${reason})`);
+            tcpRlFail(ip);
+        };
+        if (!isValidMachineId(mid)) return deny('DENY', 'invalid machine id');
+
+        const db = loadDB();
+        const entry = db[mid];
+        if (!entry || entry.revoked) {
+            revokeSessionsForMachine(mid);
+            tcpReply(socket, 'REVOKE');
+            incMetric('license_tcp_hb2_deny_total');
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
+                dispatchWebhook('license.revoked', { mid, ip });
+            }
+            delete active[mid];
+            log('WARNING', `HB2 REVOKE  ${ip}  [${mid}]  (revoked)`);
+            return;
+        }
+        if (isExpired(entry)) {
+            revokeSessionsForMachine(mid);
+            tcpReply(socket, 'EXPIRED');
+            incMetric('license_tcp_hb2_deny_total');
+            if (active[mid]) {
+                pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
+                dispatchWebhook('license.expired', { mid, ip });
+            }
+            delete active[mid];
+            log('WARNING', `HB2 EXPIRED ${ip}  [${mid}]`);
+            return;
+        }
+
+        const sessionCheck = validateSession(mid, tagged.SID, tagged.ST, ip);
+        if (!sessionCheck.ok) return deny(sessionCheck.reason, sessionCheck.reason.toLowerCase());
+
+        normalizeMachineEntry(entry);
+        const maxPl = getMaxPlayers(entry);
+        let dbChanged = processHeartbeatState(mid, ip, entry, cnt, maxPl);
+        if (dbChanged) { db[mid] = entry; saveDB(db); }
+        pushStat(mid, cnt);
+
+        if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
+            log('WARNING', `HB2 IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
+        }
+
+        const nowMs = Date.now();
+        sessionCheck.state.expires_at = nowMs + SESSION_LIFETIME_MS;
+        sessionCheck.state.last_seen = nowMs;
+        sessionCheck.state.max_players_snapshot = maxPl;
+        const extra = buildHeartbeatExtras(mid, entry, sessionCheck.state);
+        const lease = issueOfflineLease(mid, entry, maxPl);
+        tcpReply(socket, `OK2 ${maxPl} EXP:${sessionCheck.state.expires_at} SERVER_TIME:${nowMs}${extra} LEASE:${lease}`);
+
+        active[mid] = {
+            ...active[mid],
+            ip,
+            players: cnt,
+            last_seen: now(),
+            uptime_start: active[mid]?.uptime_start || now(),
+        };
+        tcpRlSuccess(ip);
+        incMetric('license_tcp_hb2_ok_total');
+        sseBroadcast('machine.hb', { mid, ip, players: cnt, max_players: maxPl, exp: sessionCheck.state.expires_at });
+        if (extra || shouldLogHeartbeat(mid)) {
+            log('INFO', `HB2 OK      ${ip}  [${mid}]  players=${cnt}/${maxPl}${extra ? ' +' + extra : ''}`);
+        }
         return;
     }
 
@@ -984,6 +1486,7 @@ function handleTcpRequest(socket, ip, raw) {
         const db = loadDB();
         const entry = db[mid];
         if (!entry || entry.revoked) {
+            revokeSessionsForMachine(mid);
             tcpReply(socket, 'REVOKE');
             if (active[mid]) {
                 pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
@@ -994,6 +1497,7 @@ function handleTcpRequest(socket, ip, raw) {
             return;
         }
         if (isExpired(entry)) {
+            revokeSessionsForMachine(mid);
             tcpReply(socket, 'REVOKE');
             if (active[mid]) {
                 pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
@@ -1095,6 +1599,8 @@ function handleTcpRequest(socket, ip, raw) {
             uptime_start: active[mid]?.uptime_start || now(),
         };
         tcpRlSuccess(ip);
+        incMetric('license_tcp_hb_ok_total');
+        sseBroadcast('machine.hb', { mid, ip, players: cnt, max_players: maxPl });
         if (hbExtra || shouldLogHeartbeat(mid)) {
             log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
         }
@@ -1123,6 +1629,7 @@ const tcpServer = net.createServer((socket) => {
     });
 
     if (currentConns > TCP_MAX_CONCURRENT_PER_IP) {
+        incMetric('license_tcp_rate_limited_total');
         tcpReply(socket, 'DENY');
         return;
     }
@@ -1255,6 +1762,40 @@ function auth(req, res, next) {
     if (req.session.loggedIn) return next();
     res.redirect('/login');
 }
+
+function metricsAccessGranted(req) {
+    const s = loadSettings();
+    if (s.metrics_public === true) return true;
+    if (req.session && req.session.loggedIn) return true;
+    const expected = String(s.metrics_token || process.env.LICENSE_METRICS_TOKEN || RUNTIME_SECRETS.metricsToken || '').trim();
+    if (!expected) return false;
+    const authz = String(req.headers.authorization || '');
+    const bearer = authz.toLowerCase().startsWith('bearer ') ? authz.slice(7).trim() : '';
+    const supplied = String(req.query.token || bearer || '').trim();
+    if (!supplied) return false;
+    const a = Buffer.from(supplied);
+    const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+app.get('/events', auth, (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    sseClients.add(res);
+    res.write(`event: hello\ndata: ${JSON.stringify({ ts: Date.now(), clients: sseClients.size })}\n\n`);
+    req.on('close', () => { sseClients.delete(res); });
+});
+
+app.get('/metrics', (req, res) => {
+    if (!metricsAccessGranted(req)) {
+        res.setHeader('WWW-Authenticate', 'Bearer realm="license-metrics"');
+        return res.status(401).type('text/plain').send('metrics authentication required\n');
+    }
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(renderMetrics());
+});
 
 // ── Login / Logout ────────────────────────────────────────────────────────────
 app.get('/setup', (req, res) => {
@@ -1554,6 +2095,8 @@ app.post('/remove-key', auth, (req, res) => {
 app.post('/revoke', auth, (req, res) => {
     const mid = (req.body.mid || '').trim(), db = loadDB();
     if (db[mid]) { db[mid].revoked = true; saveDB(db); }
+    revokeSessionsForMachine(mid);
+    if (active[mid]) { delete active[mid]; }
     dispatchWebhook('license.revoked', { mid });
     req.session.flash = { type: 'success', msg: `Đã revoke: ${mid}` };
     log('INFO', `WEB REVOKE [${mid}]`); res.redirect('/machines');
@@ -1573,6 +2116,7 @@ app.post('/delete-machine', auth, (req, res) => {
     const db = loadDB();
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: `Không tìm thấy ${mid}.` }; return res.redirect('/machines'); }
 
+    revokeSessionsForMachine(mid);
     delete db[mid];
     saveDB(db);
 
@@ -1589,7 +2133,7 @@ app.post('/delete-machine', auth, (req, res) => {
         const stats = loadStats();
         if (stats[mid]) {
             delete stats[mid];
-            saveJsonPrivate(STATS_FILE, stats, false);
+            getStore().saveStats(stats);
         }
     } catch {}
 
@@ -1615,7 +2159,7 @@ app.post('/transfer', auth, (req, res) => {
     delete db[oldMid]; saveDB(db);
     if (active[oldMid]) { active[newMid] = { ...active[oldMid] }; delete active[oldMid]; }
     const stats = loadStats();
-    if (stats[oldMid]) { stats[newMid] = stats[oldMid]; delete stats[oldMid]; saveJsonPrivate(STATS_FILE, stats, false); }
+    if (stats[oldMid]) { stats[newMid] = stats[oldMid]; delete stats[oldMid]; getStore().saveStats(stats); }
     pushHistory({ mid: newMid, event: 'transfer', ip: active[newMid]?.ip || '—', reason: `from ${oldMid}` });
     req.session.flash = { type: 'success', msg: `Đã transfer ${oldMid} → ${newMid}` };
     log('INFO', `WEB TRANSFER [${oldMid}] → [${newMid}]`); res.redirect('/machines');
@@ -1637,7 +2181,7 @@ app.post('/bulk-revoke', auth, (req, res) => {
     const db = loadDB();
     let done = 0;
     for (const mid of mids) {
-        if (db[mid] && !db[mid].revoked) { db[mid].revoked = true; done++; }
+        if (db[mid] && !db[mid].revoked) { db[mid].revoked = true; revokeSessionsForMachine(mid); if (active[mid]) delete active[mid]; done++; }
     }
     saveDB(db);
     req.session.flash = { type: 'success', msg: `Đã revoke ${done}/${mids.length} máy.` };
@@ -1675,12 +2219,13 @@ app.post('/bulk-delete', auth, (req, res) => {
     let done = 0;
     for (const mid of mids) {
         if (!db[mid]) continue;
+        revokeSessionsForMachine(mid);
         delete db[mid];
         try { agent.uninstall(mid); } catch {}
         if (active[mid]) { delete active[mid]; }
         try {
             const stats = loadStats();
-            if (stats[mid]) { delete stats[mid]; saveJsonPrivate(STATS_FILE, stats, false); }
+            if (stats[mid]) { delete stats[mid]; getStore().saveStats(stats); }
         } catch {}
         pushHistory({ mid, event: 'deleted', ip: '—', reason: 'bulk delete' });
         done++;
@@ -1781,6 +2326,7 @@ function operationsSnapshot() {
         webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
         tcpAddress: `${BIND_HOST}:${TCP_PORT}`,
         deployStatus: deployManager.status(),
+        storeHealth: (() => { try { return getStore().health(); } catch (e) { return { error: e.message }; } })(),
     };
 }
 
