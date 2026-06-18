@@ -73,6 +73,11 @@ function getStore() {
     return _storeInstance;
 }
 
+// Wire up agent + deploy manager to SQLite store
+agent.init(() => getStore());
+const deployManagerModule = require('./deploy_manager');
+deployManagerModule.init(() => getStore());
+
 function resolveSessionSecret() {
     // 1. Env var — ưu tiên cao nhất
     const envVal = String(process.env.LICENSE_SESSION_SECRET || '').trim();

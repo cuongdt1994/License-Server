@@ -6,20 +6,29 @@ const path = require('path');
 
 const HISTORY_LIMIT = 20;
 
+// ── Store reference (set via init() after SQLite is ready) ────────────────
+let _getStore = null;
+function init(getStoreFn) {
+    _getStore = getStoreFn;
+}
+function _loadHistory() {
+    if (!_getStore) return [];
+    try { return _getStore().loadDeployHistory(HISTORY_LIMIT); } catch { return []; }
+}
+function _pushHistory(entry) {
+    if (!_getStore) return;
+    try { _getStore().pushDeployHistory(entry); } catch {}
+}
+
 function resolveBin(name, extraPaths = []) {
-    // Check explicit env override first
     const envKey = name.toUpperCase() + '_CMD';
     if (process.env[envKey] && fs.existsSync(process.env[envKey])) return process.env[envKey];
-
-    // Platform-specific default paths
     const candidates = process.platform === 'win32'
         ? [path.join(process.env.APPDATA || '', 'npm', `${name}.cmd`), `${name}.cmd`]
         : ['/usr/bin/' + name, '/usr/local/bin/' + name, '/snap/bin/' + name, ...extraPaths];
-
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
     }
-    // Fallback: rely on PATH
     return name;
 }
 
@@ -48,22 +57,6 @@ function commandLabel(cmd, args) {
     return [cmd].concat(args).join(' ');
 }
 
-function readHistory(file) {
-    if (!file || !fs.existsSync(file)) return [];
-    try {
-        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
-}
-
-function writeHistory(file, history) {
-    if (!file) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(history.slice(0, HISTORY_LIMIT), null, 2));
-}
-
 function cleanOutput(value) {
     return String(value || '').trim();
 }
@@ -78,12 +71,21 @@ function createDeployManager(options = {}) {
     const npmBin      = resolveBin('npm');
     const gitBin      = resolveBin('git');
     const pm2Bin      = resolveBin('pm2');
-    const historyFile = options.historyFile || path.join(cwd, 'data', 'deploy_history.json');
     const runCommand  = options.runCommand || defaultRunCommand(cwd, timeoutMs);
     let running       = false;
     let last          = null;
     let lastCheck     = null;
-    let history       = readHistory(historyFile);
+
+    // Migrate legacy JSON history to SQLite on first load
+    if (options.historyFile && fs.existsSync(options.historyFile)) {
+        try {
+            const legacy = JSON.parse(fs.readFileSync(options.historyFile, 'utf8'));
+            if (Array.isArray(legacy)) {
+                for (const entry of legacy) _pushHistory(entry);
+                fs.unlinkSync(options.historyFile);
+            }
+        } catch {}
+    }
 
     async function runStep(name, cmd, args) {
         const startedAt = new Date().toISOString();
@@ -108,8 +110,7 @@ function createDeployManager(options = {}) {
     }
 
     function rememberResult(result) {
-        history = [result].concat(history).slice(0, HISTORY_LIMIT);
-        writeHistory(historyFile, history);
+        _pushHistory(result);
     }
 
     // ── Git pull + npm install (KHÔNG restart PM2) ─────────────────────
@@ -256,7 +257,8 @@ function createDeployManager(options = {}) {
 
     async function rollbackLast() {
         if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
-        const target = history.find(item => item && item.type === 'update' && item.ok && item.beforeCommit && item.afterCommit && item.beforeCommit !== item.afterCommit);
+        const allHistory = _loadHistory();
+        const target = allHistory.find(item => item && item.type === 'update' && item.ok && item.beforeCommit && item.afterCommit && item.beforeCommit !== item.afterCommit);
         if (!target) throw new Error('Không tìm thấy bản cập nhật trước để rollback.');
         running = true;
         const result = {
@@ -294,10 +296,10 @@ function createDeployManager(options = {}) {
     }
 
     function status() {
-        return { running, last, lastCheck, history };
+        return { running, last, lastCheck, history: _loadHistory() };
     }
 
     return { checkForUpdates, getPm2Bin: () => pm2Bin, rememberResult, restartPm2Only, rollbackLast, runGitUpdate, runUpdate, status };
 }
 
-module.exports = { createDeployManager, HISTORY_LIMIT };
+module.exports = { init, createDeployManager, HISTORY_LIMIT };

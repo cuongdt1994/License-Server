@@ -21,6 +21,8 @@ function safeStatSize(file) {
     try { return fs.statSync(file).size; } catch { return 0; }
 }
 
+const HISTORY_LIMIT_DEPLOY = 20;
+
 class SqliteStore {
     constructor(options = {}) {
         this.driver = 'sqlite';
@@ -109,6 +111,25 @@ CREATE TABLE IF NOT EXISTS admin_credentials(
   id INTEGER PRIMARY KEY CHECK(id = 1),
   data_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_tokens(
+  mid TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  created TEXT NOT NULL,
+  rotated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_state(
+  mid TEXT PRIMARY KEY,
+  last_seen INTEGER,
+  agent_ip TEXT,
+  agent_ver TEXT,
+  server_dir TEXT NOT NULL DEFAULT 'pwserver',
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deploy_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  data_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_history_ts_ms ON history(ts_ms);
@@ -205,6 +226,22 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
         this.stmt.adminGet = p('SELECT data_json FROM admin_credentials WHERE id=1');
         this.stmt.adminSet = p(`INSERT INTO admin_credentials(id,data_json,updated_at) VALUES(1,?,?)
             ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,updated_at=excluded.updated_at`);
+
+        this.stmt.agentTokenGet = p('SELECT token,created,rotated_at FROM agent_tokens WHERE mid=?');
+        this.stmt.agentTokenUpsert = p(`INSERT INTO agent_tokens(mid,token,created,rotated_at) VALUES(?,?,?,?)
+            ON CONFLICT(mid) DO UPDATE SET token=excluded.token,rotated_at=excluded.rotated_at`);
+        this.stmt.agentTokenDelete = p('DELETE FROM agent_tokens WHERE mid=?');
+        this.stmt.agentTokenAll = p('SELECT mid,token,created,rotated_at FROM agent_tokens');
+
+        this.stmt.agentStateUpsert = p(`INSERT INTO agent_state(mid,last_seen,agent_ip,agent_ver,server_dir,updated_at) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(mid) DO UPDATE SET last_seen=excluded.last_seen,agent_ip=excluded.agent_ip,agent_ver=excluded.agent_ver,server_dir=excluded.server_dir,updated_at=excluded.updated_at`);
+        this.stmt.agentStateGet = p('SELECT last_seen,agent_ip,agent_ver,server_dir FROM agent_state WHERE mid=?');
+        this.stmt.agentStateAll = p('SELECT mid,last_seen,agent_ip,agent_ver,server_dir FROM agent_state');
+        this.stmt.agentStateDelete = p('DELETE FROM agent_state WHERE mid=?');
+
+        this.stmt.deployHistoryInsert = p('INSERT INTO deploy_history(ts,data_json) VALUES(?,?)');
+        this.stmt.deployHistoryAll = p('SELECT data_json FROM deploy_history ORDER BY id DESC LIMIT ?');
+        this.stmt.deployHistoryPrune = p('DELETE FROM deploy_history WHERE id NOT IN (SELECT id FROM deploy_history ORDER BY id DESC LIMIT ?)');
     }
 
     _write(fn) {
@@ -231,8 +268,6 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
             history: path.join(this.dataDir, 'history.json'),
             admin: path.join(this.dataDir, 'admin.json'),
         };
-        const existing = Object.values(files).filter(f => fs.existsSync(f));
-
         this._write(() => {
             if (this.db.prepare('SELECT COUNT(*) n FROM machines').get().n === 0) {
                 const rows = readLegacyJson(files.machines, {});
@@ -270,10 +305,38 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
                 const admin = readLegacyJson(files.admin, null);
                 if (admin && typeof admin === 'object') this.stmt.adminSet.run(toJson(admin), Date.now());
             }
+            // Agent tokens
+            if (this.db.prepare('SELECT COUNT(*) n FROM agent_tokens').get().n === 0) {
+                const tokens = readLegacyJson(path.join(this.dataDir, 'agent_tokens.json'), {});
+                for (const [mid, val] of Object.entries(tokens || {})) {
+                    if (val && val.token) this.stmt.agentTokenUpsert.run(mid, val.token, val.created || new Date().toISOString(), val.rotated_at || val.created || new Date().toISOString());
+                }
+            }
+            // Agent state
+            if (this.db.prepare('SELECT COUNT(*) n FROM agent_state').get().n === 0) {
+                const state = readLegacyJson(path.join(this.dataDir, 'agent_state.json'), {});
+                const ts = Date.now();
+                for (const [mid, val] of Object.entries(state || {})) {
+                    this.stmt.agentStateUpsert.run(mid, val.last_seen || null, val.agent_ip || null, val.agent_ver || null, val.server_dir || 'pwserver', ts);
+                }
+            }
+            // Deploy history
+            if (this.db.prepare('SELECT COUNT(*) n FROM deploy_history').get().n === 0) {
+                const deploys = readLegacyJson(path.join(this.dataDir, 'deploy_history.json'), []);
+                for (const entry of (Array.isArray(deploys) ? deploys : [])) {
+                    this.stmt.deployHistoryInsert.run(entry.startedAt || new Date().toISOString(), toJson(entry));
+                }
+            }
             this.db.prepare('INSERT INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)')
                 .run(version, Date.now(), 'Import legacy JSON data into SQLite');
         });
 
+        const allLegacyFiles = Object.values(files).concat([
+            path.join(this.dataDir, 'agent_tokens.json'),
+            path.join(this.dataDir, 'agent_state.json'),
+            path.join(this.dataDir, 'deploy_history.json'),
+        ]);
+        const existing = allLegacyFiles.filter(f => fs.existsSync(f));
         for (const file of existing) {
             const dest = `${file}.migrated-backup`;
             try {
@@ -461,6 +524,54 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
 
     saveAdminCredentials(value) {
         return this._write(() => this.stmt.adminSet.run(toJson(value), Date.now()));
+    }
+
+    // ── Agent tokens ─────────────────────────────────────────────────────
+    loadAgentTokens() {
+        const out = {};
+        for (const row of this.stmt.agentTokenAll.all()) out[row.mid] = { token: row.token, created: row.created, rotated_at: row.rotated_at };
+        return out;
+    }
+    saveAgentTokens(data) {
+        return this._write(() => {
+            const keep = new Set(Object.keys(data || {}));
+            for (const [mid, val] of Object.entries(data || {})) this.stmt.agentTokenUpsert.run(mid, val.token, val.created, val.rotated_at);
+            for (const row of this.stmt.agentTokenAll.all()) if (!keep.has(row.mid)) this.stmt.agentTokenDelete.run(row.mid);
+        });
+    }
+    deleteAgentToken(mid) {
+        return this._write(() => this.stmt.agentTokenDelete.run(mid));
+    }
+
+    // ── Agent state ──────────────────────────────────────────────────────
+    loadAgentState() {
+        const out = {};
+        for (const row of this.stmt.agentStateAll.all()) out[row.mid] = { last_seen: row.last_seen, agent_ip: row.agent_ip, agent_ver: row.agent_ver, server_dir: row.server_dir };
+        return out;
+    }
+    saveAgentState(data) {
+        return this._write(() => {
+            const keep = new Set(Object.keys(data || {}));
+            const ts = Date.now();
+            for (const [mid, val] of Object.entries(data || {})) {
+                this.stmt.agentStateUpsert.run(mid, val.last_seen || null, val.agent_ip || null, val.agent_ver || null, val.server_dir || 'pwserver', ts);
+            }
+            for (const row of this.stmt.agentStateAll.all()) if (!keep.has(row.mid)) this.stmt.agentStateDelete.run(row.mid);
+        });
+    }
+    deleteAgentState(mid) {
+        return this._write(() => this.stmt.agentStateDelete.run(mid));
+    }
+
+    // ── Deploy history ──────────────────────────────────────────────────
+    loadDeployHistory(limit = 20) {
+        return this.stmt.deployHistoryAll.all(Math.max(1, Number(limit) || 20)).reverse().map(row => fromJson(row.data_json, {}));
+    }
+    pushDeployHistory(entry) {
+        return this._write(() => {
+            this.stmt.deployHistoryInsert.run(new Date().toISOString(), toJson(entry));
+            this.stmt.deployHistoryPrune.run(HISTORY_LIMIT_DEPLOY);
+        });
     }
 
     quickCheck() {

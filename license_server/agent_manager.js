@@ -1,35 +1,25 @@
 'use strict';
-const fs     = require('fs');
-const path   = require('path');
 const crypto = require('crypto');
-const { resolveDataDir } = require('./data_dir');
 const { sanitizeServerDir } = require('./command_policy');
 
-const DATA_DIR     = resolveDataDir({ appDir: __dirname });
-const TOKENS_FILE  = path.join(DATA_DIR, 'agent_tokens.json');
-const STATE_FILE   = path.join(DATA_DIR, 'agent_state.json');
-
-const POLL_TIMEOUT_MS = 25000;
-const CMD_TTL_MS      = 5 * 60 * 1000;
-const RESULT_TTL_MS   = 10 * 60 * 1000;
-const MONITOR_TTL_MS  = 5 * 60 * 1000;
-const TOKEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;  // 90 ngày — token hết hạn
-const TOKEN_WARN_AGE_MS = 83 * 24 * 60 * 60 * 1000; // Cảnh báo sau 83 ngày
-
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-
-function loadTokens() {
-    if (!fs.existsSync(TOKENS_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8')); } catch { return {}; }
+// ── Store reference (set via init() after SQLite is ready) ────────────────
+let _getStore = null;
+function init(getStoreFn) {
+    _getStore = getStoreFn;
 }
-function saveTokens(t) { fs.writeFileSync(TOKENS_FILE, JSON.stringify(t, null, 2), { mode: 0o600 }); }
-
-function loadState() {
-    if (!fs.existsSync(STATE_FILE)) return {};
-    try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
+function store() {
+    if (!_getStore) throw new Error('agent_manager not initialized — call init(getStore) first');
+    return _getStore();
 }
-function saveState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 }); }
 
+const POLL_TIMEOUT_MS   = 25000;
+const CMD_TTL_MS        = 5 * 60 * 1000;
+const RESULT_TTL_MS     = 10 * 60 * 1000;
+const MONITOR_TTL_MS    = 5 * 60 * 1000;
+const TOKEN_MAX_AGE_MS  = 90 * 24 * 60 * 60 * 1000;
+const TOKEN_WARN_AGE_MS = 83 * 24 * 60 * 60 * 1000;
+
+// ── In-memory runtime state (queues, results, waiters, monitors) ─────────
 const queues   = new Map();
 const results  = new Map();
 const waiters  = new Map();
@@ -40,41 +30,46 @@ function _ensureQ(mid) {
     return queues.get(mid);
 }
 
+// ── Token management (SQLite) ────────────────────────────────────────────
+function _loadTokens() {
+    try { return store().loadAgentTokens(); } catch { return {}; }
+}
+function _saveTokens(t) {
+    try { store().saveAgentTokens(t); } catch {}
+}
+
 function getOrCreateToken(mid) {
-    const all = loadTokens();
+    const all = _loadTokens();
     if (all[mid]?.token) return all[mid].token;
     const tok = crypto.randomBytes(24).toString('hex');
     all[mid] = { token: tok, created: new Date().toISOString(), rotated_at: new Date().toISOString() };
-    saveTokens(all);
+    _saveTokens(all);
     return tok;
 }
 function regenerateToken(mid) {
-    const all = loadTokens();
+    const all = _loadTokens();
     delete all[mid];
-    saveTokens(all);
+    _saveTokens(all);
     return getOrCreateToken(mid);
 }
 function verifyToken(mid, token) {
-    const e = loadTokens()[mid];
+    const e = _loadTokens()[mid];
     if (!e || !token) return false;
-    // Kiểm tra token expiry (90 ngày)
     if (isTokenExpired(mid)) return false;
     const a = Buffer.from(e.token);
     const b = Buffer.from(token);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
-// ── Token rotation enforcement ──────────────────────────────────────────────
 function isTokenExpired(mid) {
-    const e = loadTokens()[mid];
+    const e = _loadTokens()[mid];
     if (!e) return true;
-    // Dùng rotated_at nếu có, nếu không dùng created
     const ts = e.rotated_at || e.created;
     if (!ts) return true;
     const age = Date.now() - new Date(ts).getTime();
     return age > TOKEN_MAX_AGE_MS;
 }
 function getTokenExpiryInfo(mid) {
-    const e = loadTokens()[mid];
+    const e = _loadTokens()[mid];
     if (!e) return null;
     const ts = e.rotated_at || e.created;
     if (!ts) return null;
@@ -83,20 +78,27 @@ function getTokenExpiryInfo(mid) {
     const daysLeft = Math.ceil((expiresAt - Date.now()) / 86400000);
     return { created: ts, expiresAt: new Date(expiresAt).toISOString(), daysLeft, expired: daysLeft <= 0 };
 }
-function checkExpiringTokens(sendTelegramFn) {
-    const all = loadTokens();
+function checkExpiringTokens() {
+    const all = _loadTokens();
     const expiringSoon = [];
     for (const mid of Object.keys(all)) {
         const info = getTokenExpiryInfo(mid);
-        if (info && info.daysLeft > 0 && info.daysLeft <= 7) {
-            expiringSoon.push({ mid, daysLeft: info.daysLeft });
-        }
+        if (info && info.daysLeft > 0 && info.daysLeft <= 7) expiringSoon.push({ mid, daysLeft: info.daysLeft });
     }
     return expiringSoon;
 }
+
+// ── Agent state (SQLite) ─────────────────────────────────────────────────
+function _loadState() {
+    try { return store().loadAgentState(); } catch { return {}; }
+}
+function _saveState(s) {
+    try { store().saveAgentState(s); } catch {}
+}
+
 function listInstalled() {
-    const tokens = loadTokens();
-    const state  = loadState();
+    const tokens = _loadTokens();
+    const state  = _loadState();
     const out = {};
     for (const mid of Object.keys(tokens)) {
         const st = state[mid] || {};
@@ -117,32 +119,32 @@ function infoFor(mid) {
     return listInstalled()[mid] || null;
 }
 function uninstall(mid) {
-    const t = loadTokens(); delete t[mid]; saveTokens(t);
-    const s = loadState();  delete s[mid]; saveState(s);
+    try { store().deleteAgentToken(mid); } catch {}
+    try { store().deleteAgentState(mid); } catch {}
     queues.delete(mid); results.delete(mid); monitors.delete(mid);
     const ws = waiters.get(mid);
     if (ws) { for (const w of ws) try { clearTimeout(w.timer); w.resolve([]); } catch {} ; waiters.delete(mid); }
 }
 
 function setServerDir(mid, dir) {
-    const s = loadState();
+    const s = _loadState();
     s[mid] = { ...(s[mid] || {}), server_dir: sanitizeServerDir(dir) };
-    saveState(s);
+    _saveState(s);
 }
 function getServerDir(mid) {
-    const s = loadState();
+    const s = _loadState();
     return sanitizeServerDir(s[mid]?.server_dir || 'pwserver');
 }
 
 function recordHeartbeat(mid, ip, agentVer) {
-    const s = loadState();
+    const s = _loadState();
     s[mid] = {
         ...(s[mid] || {}),
         last_seen: Date.now(),
         agent_ip:  ip || s[mid]?.agent_ip || null,
         agent_ver: agentVer || s[mid]?.agent_ver || null,
     };
-    saveState(s);
+    _saveState(s);
 }
 
 function setMonitor(mid, snapshot) {
@@ -251,6 +253,8 @@ function takeResult(mid, id) {
     return r.get(id) || null;
 }
 
+// ── Script builders ──────────────────────────────────────────────────────
+
 function buildStartScript(serverDir) {
     serverDir = sanitizeServerDir(serverDir);
     return `#!/bin/bash
@@ -340,12 +344,12 @@ function parseMonitorRaw(raw) {
     return out;
 }
 
-const AGENT_RUNTIME = fs.readFileSync(path.join(__dirname, 'agent_runtime.sh'), 'utf8');
+const AGENT_RUNTIME = require('fs').readFileSync(require('path').join(__dirname, 'agent_runtime.sh'), 'utf8');
 
 function buildInstallScript({ serverUrl, mid, token }) {
-    const safeServer = String(serverUrl).replace(/'/g, "");
-    const safeMid    = String(mid).replace(/'/g, "");
-    const safeToken  = String(token).replace(/'/g, "");
+    const safeServer = String(serverUrl).replace(/'/g, '');
+    const safeMid    = String(mid).replace(/'/g, '');
+    const safeToken  = String(token).replace(/'/g, '');
     return `#!/bin/bash
 # License Manager Agent — installer
 set -e
@@ -421,6 +425,7 @@ echo "[OK] lm-agent đã được gỡ bỏ"
 }
 
 module.exports = {
+    init,
     AGENT_RUNTIME,
     getOrCreateToken, regenerateToken, verifyToken,
     listInstalled, infoFor, uninstall, setServerDir, getServerDir,
