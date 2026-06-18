@@ -53,22 +53,61 @@ const WEB_PORT        = RUNTIME.webPort;
 const BIND_HOST       = RUNTIME.bindHost;
 const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
-const SESSION_SECRET  = String(process.env.LICENSE_SESSION_SECRET || '').trim();
-if (Buffer.byteLength(SESSION_SECRET, 'utf8') < 48) {
-    throw new Error('LICENSE_SESSION_SECRET is required and must be at least 48 bytes; runtime JSON secrets are disabled.');
+
+// ── Init dirs + SQLite store (phải có trước khi resolve session secret) ──────
+const SQLITE_FILE     = path.join(DATA_DIR, 'license.sqlite3');
+const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+let _storeInstance = null;
+let _storeLogger = () => {};  // sẽ được gán lại sau khi log() định nghĩa
+function getStore() {
+    if (_storeInstance) return _storeInstance;
+    _storeInstance = createStore({
+        driver: 'sqlite',
+        dataDir: DATA_DIR,
+        dbPath: SQLITE_FILE,
+        log: (level, msg) => _storeLogger(level, msg),
+    });
+    return _storeInstance;
 }
+
+function resolveSessionSecret() {
+    // 1. Env var — ưu tiên cao nhất
+    const envVal = String(process.env.LICENSE_SESSION_SECRET || '').trim();
+    if (Buffer.byteLength(envVal, 'utf8') >= 48) {
+        return { secret: envVal, source: 'env' };
+    }
+    // 2. SQLite — đọc secret đã lưu từ lần chạy trước
+    try {
+        const settings = getStore().loadSettings();
+        if (settings.session_secret && Buffer.byteLength(String(settings.session_secret), 'utf8') >= 48) {
+            return { secret: String(settings.session_secret), source: 'sqlite' };
+        }
+    } catch {}
+    // 3. Tự sinh + lưu SQLite — lần đầu tiên
+    const generated = crypto.randomBytes(48).toString('base64url');
+    try {
+        const store = getStore();
+        const settings = store.loadSettings();
+        settings.session_secret = generated;
+        store.saveSettings(settings);
+    } catch {}
+    return { secret: generated, source: 'sqlite:auto' };
+}
+
+const SESSION_RESOLVE = resolveSessionSecret();
+const SESSION_SECRET  = SESSION_RESOLVE.secret;
 const RUNTIME_SECRETS = {
     sessionSecret: SESSION_SECRET,
     tcpSecret: process.env.LICENSE_TCP_SECRET || '',
-    sources: { session: 'env', tcp: process.env.LICENSE_TCP_SECRET ? 'env' : 'embedded-client-sync' },
+    sources: { session: SESSION_RESOLVE.source, tcp: process.env.LICENSE_TCP_SECRET ? 'env' : 'embedded-client-sync' },
     file: null,
 };
 
-// TLS-only license transport. Port 27015 is no longer a raw TCP listener.
+// TLS-only license transport.
 const TLS_PORT = clampEnvPort(process.env.LICENSE_TLS_PORT, TCP_PORT);
-if (TLS_PORT !== TCP_PORT) {
-    throw new Error(`LICENSE_TLS_PORT (${TLS_PORT}) must equal TCP_PORT (${TCP_PORT}); raw TCP has been removed.`);
-}
 const TLS_KEY_FILE = String(process.env.LICENSE_TLS_KEY_FILE || '').trim();
 const TLS_CERT_FILE = String(process.env.LICENSE_TLS_CERT_FILE || '').trim();
 const TLS_CA_FILE = String(process.env.LICENSE_TLS_CA_FILE || '').trim();
@@ -135,8 +174,6 @@ const TCP_SECRET_INFO = resolveTcpSecret(RUNTIME_SECRETS.tcpSecret);
 const SECRET_KEY      = TCP_SECRET_INFO.key;
 const LOG_FILE        = path.join(DATA_DIR, 'license.log');
 const AUDIT_FILE      = path.join(DATA_DIR, 'audit.log');
-const SQLITE_FILE     = path.join(DATA_DIR, 'license.sqlite3');
-const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 RUNTIME.tcpSecretSource = TCP_SECRET_INFO.source;
@@ -330,23 +367,6 @@ function tcpRlSuccess(ip) { delete tcpAttempts[ip]; }
 function loadBans() {
     return getStore().loadBans();
 }
-function writeFilePrivateAtomic(file, payload) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
-    const fd = fs.openSync(tmp, 'w', 0o600);
-    try {
-        fs.writeFileSync(fd, payload);
-        fs.fsyncSync(fd);
-    } finally {
-        fs.closeSync(fd);
-    }
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, file);
-}
-function saveJsonPrivate(file, data, pretty = true) {
-    const payload = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
-    writeFilePrivateAtomic(file, payload);
-}
 function saveBans(b) {
     getStore().saveBans(b || {});
 }
@@ -410,24 +430,6 @@ function expiryInfo(entry) {
     if (!d) return null;
     const daysLeft = Math.ceil((d - new Date()) / 86400000);
     return { date: d.toISOString().slice(0, 10), daysLeft };
-}
-
-// ── Init dirs ─────────────────────────────────────────────────────────────────
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(BACKUP_DIR, { recursive: true });
-
-
-// ── SQLite store (mandatory; no JSON fallback) ───────────────────────────────
-let _storeInstance = null;
-function getStore() {
-    if (_storeInstance) return _storeInstance;
-    _storeInstance = createStore({
-        driver: 'sqlite',
-        dataDir: DATA_DIR,
-        dbPath: SQLITE_FILE,
-        log: (level, msg) => log(level || 'INFO', msg),
-    });
-    return _storeInstance;
 }
 
 // ── Prometheus-style metrics ─────────────────────────────────────────────────
@@ -542,6 +544,7 @@ function log(level, msg) {
     console.log(line);
     fs.appendFileSync(LOG_FILE, line + '\n');
 }
+_storeLogger = log;  // wire up store logging after log() is defined
 
 function audit(req, action, details = {}) {
     try {
@@ -2466,7 +2469,6 @@ function operationsSnapshot() {
         dataDirSource: DATA_DIR_INFO.source,
         webUrl: `http://${BIND_HOST}:${WEB_PORT}`,
         tlsAddress: `${BIND_HOST}:${TLS_PORT}`,
-        tcpAddress: null,
         deployStatus: deployManager.status(),
         storeHealth: (() => { try { return getStore().health(); } catch (e) { return { error: e.message }; } })(),
     };
@@ -2782,7 +2784,6 @@ app.get('/health', (req, res) => {
             tls_connections: _tlsConnections.size,
             tls_min_version: TLS_MIN_VERSION,
             certificate_valid_to: _tlsCertificateInfo.valid_to,
-            raw_tcp_enabled: false,
         },
         database,
         auth2_sessions_active: sessions.size,

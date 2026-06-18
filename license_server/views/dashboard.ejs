@@ -90,7 +90,7 @@
     <div class="card-sub">
       Chứng chỉ hết hạn: <b><%= transport && transport.certificate_valid_to ? new Date(transport.certificate_valid_to).toLocaleString('vi-VN') : '—' %></b>
       · WAL: <b><%= database ? Math.round((database.wal_size_bytes || 0) / 1024) : 0 %> KB</b>
-      · Raw TCP: <b style="color:#22c55e">đã tắt</b>
+      · Transport: <b style="color:#22c55e">TLS</b>
     </div>
   </div>
 
