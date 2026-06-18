@@ -6,28 +6,39 @@ const path = require('path');
 
 const HISTORY_LIMIT = 20;
 
+function resolveBin(name, extraPaths = []) {
+    // Check explicit env override first
+    const envKey = name.toUpperCase() + '_CMD';
+    if (process.env[envKey] && fs.existsSync(process.env[envKey])) return process.env[envKey];
+
+    // Platform-specific default paths
+    const candidates = process.platform === 'win32'
+        ? [path.join(process.env.APPDATA || '', 'npm', `${name}.cmd`), `${name}.cmd`]
+        : ['/usr/bin/' + name, '/usr/local/bin/' + name, '/snap/bin/' + name, ...extraPaths];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    // Fallback: rely on PATH
+    return name;
+}
+
 function defaultRunCommand(cwd, timeoutMs) {
     return (cmd, args) => new Promise(resolve => {
         const child = spawn(cmd, args, {
             cwd,
             shell: false,
             windowsHide: true,
+            timeout: timeoutMs,
         });
         let stdout = '';
         let stderr = '';
-        const timer = setTimeout(() => {
-            child.kill('SIGTERM');
-            stderr += `\nCommand timed out after ${timeoutMs}ms`;
-        }, timeoutMs);
-
         child.stdout.on('data', chunk => { stdout += chunk.toString(); });
         child.stderr.on('data', chunk => { stderr += chunk.toString(); });
         child.on('error', err => {
-            clearTimeout(timer);
             resolve({ code: 1, stdout, stderr: `${stderr}${err.message}` });
         });
         child.on('close', code => {
-            clearTimeout(timer);
             resolve({ code: code || 0, stdout, stderr });
         });
     });
@@ -57,45 +68,27 @@ function cleanOutput(value) {
     return String(value || '').trim();
 }
 
-function resolveDefaultPm2Command(env = process.env, platform = process.platform) {
-    if (env.PM2_CMD) return env.PM2_CMD;
-    if (platform === 'win32') {
-        const appDataPm2 = env.APPDATA ? path.join(env.APPDATA, 'npm', 'pm2.cmd') : '';
-        if (appDataPm2 && fs.existsSync(appDataPm2)) return appDataPm2;
-        return 'pm2.cmd';
-    }
-    for (const candidate of ['/usr/bin/pm2', '/usr/local/bin/pm2', '/snap/bin/pm2']) {
-        if (fs.existsSync(candidate)) return candidate;
-    }
-    return 'pm2';
-}
-
-function addPm2MissingHint(step) {
-    const output = `${step.stderr}\n${step.stdout}`;
-    if (!/not recognized|ENOENT|no such file|không.*tìm/i.test(output)) return step;
-    const hint = 'Không tìm thấy PM2. Hãy cài PM2 hoặc set PM2_CMD tới đường dẫn pm2.cmd/pm2 trước khi dùng cập nhật tự động.';
-    return {
-        ...step,
-        stderr: cleanOutput(`${step.stderr}\n${hint}`),
-    };
+function addHint(step, hint) {
+    return { ...step, stderr: cleanOutput(`${step.stderr}\n${hint}`) };
 }
 
 function createDeployManager(options = {}) {
-    const cwd = options.cwd || process.cwd();
-    const timeoutMs = options.timeoutMs || 120000;
-    const npmBin = options.npmBin || process.env.npm_execpath || (process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\npm.cmd' : '/usr/bin/npm');
-    const pm2Bin = options.pm2Bin || resolveDefaultPm2Command(options.env || process.env, process.platform);
+    const cwd         = options.cwd || process.cwd();
+    const timeoutMs   = options.timeoutMs || 120000;
+    const npmBin      = resolveBin('npm');
+    const gitBin      = resolveBin('git');
+    const pm2Bin      = resolveBin('pm2');
     const historyFile = options.historyFile || path.join(cwd, 'data', 'deploy_history.json');
-    const runCommand = options.runCommand || defaultRunCommand(cwd, timeoutMs);
-    let running = false;
-    let last = null;
-    let lastCheck = null;
-    let history = readHistory(historyFile);
+    const runCommand  = options.runCommand || defaultRunCommand(cwd, timeoutMs);
+    let running       = false;
+    let last          = null;
+    let lastCheck     = null;
+    let history       = readHistory(historyFile);
 
     async function runStep(name, cmd, args) {
         const startedAt = new Date().toISOString();
         const output = await runCommand(cmd, args);
-        return {
+        let step = {
             name,
             command: commandLabel(cmd, args),
             code: typeof output.code === 'number' ? output.code : 1,
@@ -104,24 +97,38 @@ function createDeployManager(options = {}) {
             startedAt,
             finishedAt: new Date().toISOString(),
         };
-    }
-
-    function rememberResult(result) {
-        const normalized = {
-            type: result.type || (result.beforeCommit && result.afterCommit ? 'update' : 'operation'),
-            ...result,
-        };
-        history = [normalized].concat(history).slice(0, HISTORY_LIMIT);
-        writeHistory(historyFile, history);
-    }
-
-    async function runGitInfoStep(name, args) {
-        const step = await runStep(name, 'git', args);
+        // Add hints for common failures
+        const combined = `${step.stderr}\n${step.stdout}`;
+        if (step.code !== 0) {
+            if (/not recognized|ENOENT|no such file|không.*tìm|command not found/i.test(combined)) {
+                step = addHint(step, `Không tìm thấy ${cmd}. Hãy cài đặt hoặc set ${cmd.toUpperCase()}_CMD.`);
+            }
+        }
         return step;
     }
 
+    function rememberResult(result) {
+        history = [result].concat(history).slice(0, HISTORY_LIMIT);
+        writeHistory(historyFile, history);
+    }
+
+    // ── Pre-flight: kiểm tra git/pm2/npm có sẵn không ────────────────────────
+    async function preflight() {
+        const checks = [];
+        for (const [name, bin] of [['git', gitBin], ['npm', npmBin], ['pm2', pm2Bin]]) {
+            const step = await runStep(`Kiểm tra ${name}`, bin, ['--version']);
+            checks.push({ name, ok: step.code === 0, path: bin });
+        }
+        const failed = checks.filter(c => !c.ok);
+        if (failed.length) {
+            const list = failed.map(c => `${c.name} (${c.path})`).join(', ');
+            throw new Error(`Thiếu công cụ: ${list}. Cài đặt trước khi dùng update.`);
+        }
+        return checks;
+    }
+
     async function runUpdate() {
-        if (running) throw new Error('Deployment is already running');
+        if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         running = true;
         const result = {
             type: 'update',
@@ -137,37 +144,52 @@ function createDeployManager(options = {}) {
         last = result;
 
         try {
-            const before = await runGitInfoStep('Commit trước update', ['rev-parse', '--short', 'HEAD']);
+            // 0. Pre-flight
+            try { await preflight(); } catch (e) { result.ok = false; result.steps.push({ name: 'Pre-flight', code: 1, stderr: e.message }); last = result; return result; }
+
+            // 1. Commit hiện tại
+            const before = await runStep('Commit trước update', gitBin, ['rev-parse', '--short', 'HEAD']);
             result.steps.push(before);
             result.beforeCommit = cleanOutput(before.stdout);
             if (before.code !== 0) result.ok = false;
 
+            // 2. Git pull
             if (result.ok) {
-                const pull = await runGitInfoStep('Lấy code mới từ Git', ['pull', '--ff-only']);
+                const pull = await runStep('Git pull', gitBin, ['pull', '--ff-only']);
                 result.steps.push(pull);
                 if (pull.code !== 0) result.ok = false;
             }
 
+            // 3. Commit sau pull
             if (result.ok) {
-                const after = await runGitInfoStep('Commit sau update', ['rev-parse', '--short', 'HEAD']);
+                const after = await runStep('Commit sau update', gitBin, ['rev-parse', '--short', 'HEAD']);
                 result.steps.push(after);
                 result.afterCommit = cleanOutput(after.stdout);
-                result.changed = Boolean(result.beforeCommit && result.afterCommit && result.beforeCommit !== result.afterCommit);
+                result.changed = !!(result.beforeCommit && result.afterCommit && result.beforeCommit !== result.afterCommit);
                 if (after.code !== 0) result.ok = false;
             }
 
+            // 4. Git log
             if (result.ok) {
-                const summary = await runGitInfoStep('Commit mới nhất', ['log', '-1', '--pretty=format:%h %ci %s']);
+                const summary = await runStep('Commit mới nhất', gitBin, ['log', '-1', '--pretty=format:%h %ci %s']);
                 result.steps.push(summary);
                 result.gitSummary = cleanOutput(summary.stdout);
-                if (summary.code !== 0) result.ok = false;
             }
 
-            if (result.ok) {
-                const step = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
-                result.steps.push(step);
-                if (step.code !== 0) result.ok = false;
+            // 5. npm install — luôn chạy để đảm bảo dependencies đúng
+            if (result.ok && result.changed) {
+                const install = await runStep('npm install', npmBin, ['install', '--production']);
+                result.steps.push(install);
+                if (install.code !== 0) result.ok = false;
             }
+
+            // 6. PM2 restart
+            if (result.ok) {
+                const restart = await runStep('PM2 restart', pm2Bin, ['restart', 'all', '--update-env']);
+                result.steps.push(restart);
+                if (restart.code !== 0) result.ok = false;
+            }
+
             return result;
         } finally {
             result.finishedAt = new Date().toISOString();
@@ -177,7 +199,7 @@ function createDeployManager(options = {}) {
     }
 
     async function restartPm2Only() {
-        if (running) throw new Error('Deployment is already running');
+        if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         running = true;
         const result = {
             type: 'restart',
@@ -188,7 +210,7 @@ function createDeployManager(options = {}) {
         };
         last = result;
         try {
-            const restart = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
+            const restart = await runStep('PM2 restart', pm2Bin, ['restart', 'all', '--update-env']);
             result.steps.push(restart);
             if (restart.code !== 0) result.ok = false;
             return result;
@@ -200,7 +222,7 @@ function createDeployManager(options = {}) {
     }
 
     async function checkForUpdates() {
-        if (running) throw new Error('Deployment is already running');
+        if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         running = true;
         const result = {
             type: 'check',
@@ -216,30 +238,29 @@ function createDeployManager(options = {}) {
         lastCheck = result;
         last = result;
         try {
-            const local = await runGitInfoStep('Commit local', ['rev-parse', '--short', 'HEAD']);
+            const local = await runStep('Commit local', gitBin, ['rev-parse', '--short', 'HEAD']);
             result.steps.push(local);
             result.localCommit = cleanOutput(local.stdout);
             if (local.code !== 0) result.ok = false;
 
             if (result.ok) {
-                const fetch = await runGitInfoStep('Fetch remote', ['fetch', '--prune']);
+                const fetch = await runStep('Fetch remote', gitBin, ['fetch', '--prune']);
                 result.steps.push(fetch);
                 if (fetch.code !== 0) result.ok = false;
             }
 
             if (result.ok) {
-                const remote = await runGitInfoStep('Commit remote', ['rev-parse', '--short', '@{u}']);
+                const remote = await runStep('Commit remote', gitBin, ['rev-parse', '--short', '@{u}']);
                 result.steps.push(remote);
                 result.remoteCommit = cleanOutput(remote.stdout);
-                result.updateAvailable = Boolean(result.localCommit && result.remoteCommit && result.localCommit !== result.remoteCommit);
+                result.updateAvailable = !!(result.localCommit && result.remoteCommit && result.localCommit !== result.remoteCommit);
                 if (remote.code !== 0) result.ok = false;
             }
 
             if (result.ok) {
-                const log = await runGitInfoStep('Commit chờ cập nhật', ['log', '--oneline', '--decorate', '-5', 'HEAD..@{u}']);
+                const log = await runStep('Commit chờ cập nhật', gitBin, ['log', '--oneline', '--decorate', '-5', 'HEAD..@{u}']);
                 result.steps.push(log);
                 result.remoteLog = cleanOutput(log.stdout);
-                if (log.code !== 0) result.ok = false;
             }
 
             return result;
@@ -250,9 +271,9 @@ function createDeployManager(options = {}) {
     }
 
     async function rollbackLast() {
-        if (running) throw new Error('Deployment is already running');
+        if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         const target = history.find(item => item && item.type === 'update' && item.ok && item.beforeCommit && item.afterCommit && item.beforeCommit !== item.afterCommit);
-        if (!target) throw new Error('No rollback target found');
+        if (!target) throw new Error('Không tìm thấy bản cập nhật trước để rollback.');
         running = true;
         const result = {
             type: 'rollback',
@@ -265,12 +286,18 @@ function createDeployManager(options = {}) {
         };
         last = result;
         try {
-            const reset = await runGitInfoStep('Rollback Git', ['reset', '--hard', target.beforeCommit]);
+            const reset = await runStep('Git reset', gitBin, ['reset', '--hard', target.beforeCommit]);
             result.steps.push(reset);
             if (reset.code !== 0) result.ok = false;
 
             if (result.ok) {
-                const restart = addPm2MissingHint(await runStep('Restart PM2', pm2Bin, ['restart', 'all', '--update-env']));
+                const install = await runStep('npm install', npmBin, ['install', '--production']);
+                result.steps.push(install);
+                if (install.code !== 0) result.ok = false;
+            }
+
+            if (result.ok) {
+                const restart = await runStep('PM2 restart', pm2Bin, ['restart', 'all', '--update-env']);
                 result.steps.push(restart);
                 if (restart.code !== 0) result.ok = false;
             }
@@ -286,7 +313,7 @@ function createDeployManager(options = {}) {
         return { running, last, lastCheck, history };
     }
 
-    return { checkForUpdates, rememberResult, restartPm2Only, rollbackLast, runUpdate, status };
+    return { checkForUpdates, restartPm2Only, rollbackLast, runUpdate, status };
 }
 
-module.exports = { createDeployManager, resolveDefaultPm2Command, HISTORY_LIMIT };
+module.exports = { createDeployManager, HISTORY_LIMIT };
