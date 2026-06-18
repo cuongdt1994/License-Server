@@ -33,7 +33,7 @@ module.exports = {
                 LICENSE_BIND_HOST: process.env.LICENSE_BIND_HOST || '0.0.0.0',
                 LICENSE_COOKIE_SECURE: process.env.LICENSE_COOKIE_SECURE || '0',
                 LICENSE_DATA_DIR: dataDir,
-                LICENSE_SESSION_SECRET: process.env.LICENSE_SESSION_SECRET || '',
+                LICENSE_SESSION_SECRET: process.env.LICENSE_SESSION_SECRET || 'Xhy_kdn_rvuU18tmOGrkJLGQ0WjrXncCIFpRO0ZbXx3v9GkJQYu9Gp9Qi2ntwql2',
                 LICENSE_TCP_SECRET: process.env.LICENSE_TCP_SECRET || '',
                 LICENSE_WEB_USER: process.env.LICENSE_WEB_USER || '',
                 LICENSE_WEB_PASS: process.env.LICENSE_WEB_PASS || '',
