@@ -167,7 +167,7 @@ function resolveTcpSecret(runtimeSecret) {
     return {
         key: embedded,
         source: 'embedded-client-sync',
-        warning: 'TCP secret fallback: server is using the embedded client-synced secret. Set LICENSE_TCP_SECRET and rebuild client if you intentionally rotate it.',
+        info: 'TCP secret: using embedded client-synced key. Set LICENSE_TCP_SECRET env if you need a custom secret.',
     };
 }
 const TCP_SECRET_INFO = resolveTcpSecret(RUNTIME_SECRETS.tcpSecret);
@@ -178,7 +178,9 @@ RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 RUNTIME.tcpSecretSource = TCP_SECRET_INFO.source;
 if (!Array.isArray(RUNTIME.warnings)) RUNTIME.warnings = [];
-if (TCP_SECRET_INFO.warning) RUNTIME.warnings.push(TCP_SECRET_INFO.warning);
+if (TCP_SECRET_INFO.info) {
+    log('INFO', TCP_SECRET_INFO.info);
+}
 
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
 const DEFAULT_PLAYERS = 10;  // Basic tier: 10 players
