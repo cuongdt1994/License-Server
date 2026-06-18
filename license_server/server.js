@@ -2482,15 +2482,27 @@ app.get('/operations', auth, (req, res) => {
 
 app.post('/operations/update', auth, async (req, res) => {
     try {
-        const result = await deployManager.runUpdate();
+        const result = await deployManager.runGitUpdate();
         audit(req, 'deploy.update', { ok: result.ok });
         req.session.flash = result.ok
-            ? { type: 'success', msg: 'Đã cập nhật từ Git và restart PM2.' }
+            ? { type: 'success', msg: 'Đã cập nhật code từ Git.' + (result.changed ? ' Đang restart PM2...' : ' Không có thay đổi.') }
             : { type: 'danger', msg: 'Cập nhật thất bại. Xem chi tiết trong Operations.' };
+        // Gửi response trước KHI PM2 restart — tránh ERR_EMPTY_RESPONSE
+        res.redirect('/operations');
+        // Restart PM2 detached sau khi response đã gửi
+        if (result.ok && result.changed) {
+            setTimeout(() => {
+                const { spawn } = require('child_process');
+                const pm2Bin = deployManager.getPm2Bin();
+                spawn(pm2Bin, ['restart', 'all', '--update-env'], { detached: true, stdio: 'ignore' }).unref();
+            }, 1500);
+        }
     } catch (err) {
-        req.session.flash = { type: 'danger', msg: err.message || 'Không thể chạy cập nhật.' };
+        if (!res.headersSent) {
+            req.session.flash = { type: 'danger', msg: err.message || 'Không thể chạy cập nhật.' };
+            res.redirect('/operations');
+        }
     }
-    res.redirect('/operations');
 });
 
 app.post('/operations/check-update', auth, async (req, res) => {
@@ -2513,10 +2525,21 @@ app.post('/operations/restart', auth, async (req, res) => {
         req.session.flash = result.ok
             ? { type: 'success', msg: 'Đã restart PM2.' }
             : { type: 'danger', msg: 'Restart PM2 thất bại. Xem chi tiết trong Operations.' };
+        // Gửi response trước khi PM2 kill process này
+        res.redirect('/operations');
+        if (result.ok) {
+            setTimeout(() => {
+                const { spawn } = require('child_process');
+                const pm2Bin = deployManager.getPm2Bin();
+                spawn(pm2Bin, ['restart', 'all', '--update-env'], { detached: true, stdio: 'ignore' }).unref();
+            }, 1500);
+        }
     } catch (err) {
-        req.session.flash = { type: 'danger', msg: err.message || 'Không thể restart PM2.' };
+        if (!res.headersSent) {
+            req.session.flash = { type: 'danger', msg: err.message || 'Không thể restart PM2.' };
+            res.redirect('/operations');
+        }
     }
-    res.redirect('/operations');
 });
 
 app.post('/operations/rollback', auth, async (req, res) => {
@@ -2524,12 +2547,22 @@ app.post('/operations/rollback', auth, async (req, res) => {
         const result = await deployManager.rollbackLast();
         audit(req, 'deploy.rollback', { ok: result.ok, rollbackTo: result.rollbackTo });
         req.session.flash = result.ok
-            ? { type: 'success', msg: `Đã rollback về commit ${result.rollbackTo} và restart PM2.` }
+            ? { type: 'success', msg: `Đã rollback về commit ${result.rollbackTo}. Đang restart PM2...` }
             : { type: 'danger', msg: 'Rollback thất bại. Xem chi tiết trong Operations.' };
+        res.redirect('/operations');
+        if (result.ok) {
+            setTimeout(() => {
+                const { spawn } = require('child_process');
+                const pm2Bin = deployManager.getPm2Bin();
+                spawn(pm2Bin, ['restart', 'all', '--update-env'], { detached: true, stdio: 'ignore' }).unref();
+            }, 1500);
+        }
     } catch (err) {
-        req.session.flash = { type: 'danger', msg: err.message || 'Không thể rollback.' };
+        if (!res.headersSent) {
+            req.session.flash = { type: 'danger', msg: err.message || 'Không thể rollback.' };
+            res.redirect('/operations');
+        }
     }
-    res.redirect('/operations');
 });
 
 app.get('/settings', auth, (req, res) => {

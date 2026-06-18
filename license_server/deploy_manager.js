@@ -112,7 +112,10 @@ function createDeployManager(options = {}) {
         writeHistory(historyFile, history);
     }
 
-    async function runUpdate() {
+    // ── Git pull + npm install (KHÔNG restart PM2) ─────────────────────
+    // Tách PM2 restart ra ngoài để response kịp gửi về browser trước khi
+    // PM2 kill process (tránh ERR_EMPTY_RESPONSE).
+    async function runGitUpdate() {
         if (running) throw new Error('Đang có tiến trình deploy khác đang chạy.');
         running = true;
         const result = {
@@ -129,20 +132,17 @@ function createDeployManager(options = {}) {
         last = result;
 
         try {
-            // 1. Commit hiện tại
             const before = await runStep('Commit trước update', gitBin, ['rev-parse', '--short', 'HEAD']);
             result.steps.push(before);
             result.beforeCommit = cleanOutput(before.stdout);
             if (before.code !== 0) result.ok = false;
 
-            // 2. Git pull
             if (result.ok) {
                 const pull = await runStep('Git pull', gitBin, ['pull', '--ff-only']);
                 result.steps.push(pull);
                 if (pull.code !== 0) result.ok = false;
             }
 
-            // 3. Commit sau pull
             if (result.ok) {
                 const after = await runStep('Commit sau update', gitBin, ['rev-parse', '--short', 'HEAD']);
                 result.steps.push(after);
@@ -151,25 +151,16 @@ function createDeployManager(options = {}) {
                 if (after.code !== 0) result.ok = false;
             }
 
-            // 4. Git log
             if (result.ok) {
                 const summary = await runStep('Commit mới nhất', gitBin, ['log', '-1', '--pretty=format:%h %ci %s']);
                 result.steps.push(summary);
                 result.gitSummary = cleanOutput(summary.stdout);
             }
 
-            // 5. npm install — luôn chạy để đảm bảo dependencies đúng
             if (result.ok && result.changed) {
                 const install = await runStep('npm install', npmBin, ['install', '--production']);
                 result.steps.push(install);
                 if (install.code !== 0) result.ok = false;
-            }
-
-            // 6. PM2 restart
-            if (result.ok) {
-                const restart = await runStep('PM2 restart', pm2Bin, ['restart', 'all', '--update-env']);
-                result.steps.push(restart);
-                if (restart.code !== 0) result.ok = false;
             }
 
             return result;
@@ -178,6 +169,17 @@ function createDeployManager(options = {}) {
             rememberResult(result);
             running = false;
         }
+    }
+
+    // Giữ lại để backward compat — server.js KHÔNG gọi trực tiếp nữa
+    async function runUpdate() {
+        const result = await runGitUpdate();
+        if (result.ok && result.changed) {
+            const restart = await runStep('PM2 restart', pm2Bin, ['restart', 'all', '--update-env']);
+            result.steps.push(restart);
+            if (restart.code !== 0) result.ok = false;
+        }
+        return result;
     }
 
     async function restartPm2Only() {
@@ -295,7 +297,7 @@ function createDeployManager(options = {}) {
         return { running, last, lastCheck, history };
     }
 
-    return { checkForUpdates, rememberResult, restartPm2Only, rollbackLast, runUpdate, status };
+    return { checkForUpdates, getPm2Bin: () => pm2Bin, rememberResult, restartPm2Only, rollbackLast, runGitUpdate, runUpdate, status };
 }
 
 module.exports = { createDeployManager, HISTORY_LIMIT };
