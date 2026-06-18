@@ -1,23 +1,25 @@
 {
-  "name": "license-server",
+  "name": "license-server-tls-sqlite",
   "version": "2.0.0",
+  "private": true,
+  "description": "TLS-only license server on port 27015 with SQLite persistence",
   "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/data_dir.test.js && node test/runtime_config.test.js && node test/runtime_secrets.test.js && node test/session_store.test.js && node test/deploy_manager.test.js && node test/pm2_config.test.js && node test/security.test.js && node test/setup_wizard.test.js && node test/ui_flash.test.js && node test/ui_machines_actions.test.js && node test/ui_settings_runtime.test.js && node test/upgrade_ui_ops.test.js && node test/command_policy.test.js",
-    "pm2:start": "pm2 start ecosystem.config.js",
-    "pm2:restart": "pm2 reload ecosystem.config.js --update-env",
-    "pm2:stop": "pm2 stop license-server",
-    "pm2:logs": "pm2 logs license-server --lines 200",
-    "pm2:save": "pm2 save"
+    "check": "node --check server.js && node --check store.js && node --check store_sqlite.js && node --check session_store.js",
+    "check:sqlite": "node scripts/check_sqlite.js"
   },
   "dependencies": {
-    "ejs": "^3.1.9",
-    "express": "^4.18.2",
-    "express-session": "^1.17.3",
-    "multer": "^2.0.0",
-    "qrcode": "^1.5.3",
-    "speakeasy": "^2.0.0",
-    "ws": "^8.14.2"
+    "better-sqlite3": "12.11.1",
+    "ejs": "3.1.10",
+    "express": "4.21.2",
+    "express-session": "1.19.0",
+    "multer": "2.2.0",
+    "qrcode": "1.5.4",
+    "speakeasy": "2.0.0"
   }
 }
