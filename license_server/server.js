@@ -188,6 +188,84 @@ if (TCP_SECRET_INFO.info) {
     log('INFO', TCP_SECRET_INFO.info);
 }
 
+// ── Ed25519 offline lease signing ──────────────────────────────────────────
+// Key pair tự sinh lần đầu, tự lưu vào SQLite, tự load lại các lần sau.
+// Không cần env var. Muốn override thì set LICENSE_ED25519_PRIVATE_KEY_HEX.
+const ED25519_PKCS8_HEADER = Buffer.from('302e020100300506032b657004220420', 'hex');
+let ed25519KeyPair = null;
+
+function resolveEd25519KeyPair() {
+    try {
+        // 1. Env var — override cao nhất (64-char hex = 32-byte seed)
+        const envSeed = String(process.env.LICENSE_ED25519_PRIVATE_KEY_HEX || '').trim();
+        if (envSeed && isHexLen(envSeed, 64)) {
+            const seed = Buffer.from(envSeed, 'hex');
+            const privateKey = crypto.createPrivateKey({
+                key: Buffer.concat([ED25519_PKCS8_HEADER, seed]),
+                format: 'der', type: 'pkcs8',
+            });
+            const publicKey = crypto.createPublicKey(privateKey);
+            log('INFO', 'Ed25519 key pair loaded from LICENSE_ED25519_PRIVATE_KEY_HEX');
+            return { privateKey, publicKey, source: 'env' };
+        }
+
+        // 2. SQLite — key đã lưu từ lần chạy trước
+        try {
+            const settings = getStore().loadSettings();
+            if (settings.ed25519_seed && isHexLen(String(settings.ed25519_seed), 64)) {
+                const seed = Buffer.from(String(settings.ed25519_seed), 'hex');
+                const privateKey = crypto.createPrivateKey({
+                    key: Buffer.concat([ED25519_PKCS8_HEADER, seed]),
+                    format: 'der', type: 'pkcs8',
+                });
+                const publicKey = crypto.createPublicKey(privateKey);
+                log('INFO', 'Ed25519 key pair loaded from SQLite (auto-persisted)');
+                return { privateKey, publicKey, source: 'sqlite' };
+            }
+        } catch {}
+
+        // 3. Tự sinh + lưu SQLite — lần đầu chạy, không cần làm gì cả
+        const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+        const pubDer = publicKey.export({ format: 'der', type: 'spki' });
+        const pubRaw = pubDer.subarray(pubDer.length - 32);
+        const privDer = privateKey.export({ format: 'der', type: 'pkcs8' });
+        const seed = privDer.subarray(privDer.length - 32);
+
+        try {
+            const store = getStore();
+            const settings = store.loadSettings();
+            settings.ed25519_seed = seed.toString('hex');
+            store.saveSettings(settings);
+            log('INFO', 'Ed25519 key pair auto-generated and saved to SQLite.');
+        } catch (e) {
+            log('WARNING', `Cannot persist Ed25519 seed to SQLite: ${e.message}`);
+        }
+
+        log('INFO', `Ed25519 public key: ${pubRaw.toString('hex')}`);
+        log('INFO', 'Copy this public key to client build: LICENSE_ED25519_PUBLIC_KEY_HEX=' + pubRaw.toString('hex'));
+        return { privateKey, publicKey, source: 'sqlite:auto' };
+    } catch (err) {
+        log('ERROR', `Ed25519 init failed: ${err.message} (Node.js >= 12 required)`);
+        return null;
+    }
+}
+
+ed25519KeyPair = resolveEd25519KeyPair();
+
+function signOfflineLeaseEd25519(payloadB64) {
+    if (!ed25519KeyPair) return null;
+    const sig = crypto.sign(null, Buffer.from(payloadB64, 'utf8'), ed25519KeyPair.privateKey);
+    return base64UrlEncodeBuffer(sig);
+}
+
+function ed25519PublicKeyHex() {
+    if (!ed25519KeyPair) return '';
+    try {
+        const pubDer = ed25519KeyPair.publicKey.export({ format: 'der', type: 'spki' });
+        return pubDer.subarray(pubDer.length - 32).toString('hex');
+    } catch { return ''; }
+}
+
 const STRICT_LICENSE_KEY = strictLicenseKeyEnabled();
 const DEFAULT_PLAYERS = 10;  // Basic tier: 10 players
 const MAX_PLAYERS_LIMIT = 100000;
@@ -266,7 +344,8 @@ const CIPHER = 'aes-256-gcm';
 const REPLAY_WINDOW_MS = 30 * 1000;        // 30s
 const MAX_TCP_FRAME_BYTES = 8 * 1024;
 const MAX_SEEN_NONCES = 20000;
-const TCP_SOCKET_TIMEOUT_MS = 8000;
+// Persistent HB2 socket timeout. Must be comfortably above client heartbeat interval.
+const TCP_SOCKET_TIMEOUT_MS = clampEnvInt(process.env.LICENSE_TCP_SOCKET_TIMEOUT_MS, 30000, 5000, 300000);
 const TCP_MAX_BUFFER_BYTES = MAX_TCP_FRAME_BYTES * 2 + 128;
 const seenNonces = new Map();              // iv_hex → expireAt (chống replay đúng nghĩa)
 let lastTcpDecryptError = 'unknown';
@@ -453,12 +532,8 @@ const METRIC_DEFS = {
     license_sessions_created_total: ['counter', 'Total AUTH2 sessions created.'],
     license_sessions_expired_total: ['counter', 'Total AUTH2 sessions expired or revoked.'],
     license_offline_leases_issued_total: ['counter', 'Total signed offline leases issued.'],
-    license_tcp_auth_ok_total: ['counter', 'Legacy AUTH successes.'],
-    license_tcp_auth_deny_total: ['counter', 'Legacy AUTH denials.'],
     license_tcp_auth2_ok_total: ['counter', 'AUTH2 successes.'],
     license_tcp_auth2_deny_total: ['counter', 'AUTH2 denials.'],
-    license_tcp_hb_ok_total: ['counter', 'Legacy HB successes.'],
-    license_tcp_hb_deny_total: ['counter', 'Legacy HB denials.'],
     license_tcp_hb2_ok_total: ['counter', 'HB2 successes.'],
     license_tcp_hb2_deny_total: ['counter', 'HB2 denials.'],
     license_tcp_decrypt_fail_total: ['counter', 'TCP AES-GCM decrypt or frame validation failures.'],
@@ -921,14 +996,11 @@ function getOfflineLeaseTtlMs(entry) {
     if (Number.isFinite(Number(byHours[tier])) && Number(byHours[tier]) > 0) return Number(byHours[tier]) * 60 * 60 * 1000;
     return defaults[tier] || defaults.basic;
 }
-function signOfflineLease(payloadB64) {
-    return base64UrlEncodeBuffer(crypto.createHmac('sha256', SECRET_KEY).update(payloadB64).digest());
-}
 function issueOfflineLease(mid, entry, maxPlayers) {
     const issuedAt = Date.now();
     const payload = {
-        v: 1,
-        alg: 'HS256',
+        v: 2,
+        alg: 'Ed25519',
         mid,
         license_key_hash: licenseKeyHash(entry?.license_key || ''),
         max_players: maxPlayers,
@@ -940,9 +1012,23 @@ function issueOfflineLease(mid, entry, maxPlayers) {
         features: entry?.features && typeof entry.features === 'object' ? entry.features : {},
     };
     const payloadB64 = base64UrlEncodeJson(payload);
-    const lease = `${payloadB64}.${signOfflineLease(payloadB64)}`;
+    const sig = signOfflineLeaseEd25519(payloadB64);
+    if (!sig) {
+        // Fallback: HMAC-SHA256 lease (backward compat with older client builds
+        // that don't have Ed25519 compiled in). Remove once all clients rebuild.
+        log('WARNING', `Ed25519 key not available; falling back to HMAC lease for ${mid}`);
+        const hmacSig = base64UrlEncodeBuffer(
+            crypto.createHmac('sha256', SECRET_KEY).update(payloadB64).digest()
+        );
+        const lease = `${payloadB64}.${hmacSig}`;
+        incMetric('license_offline_leases_issued_total');
+        sseBroadcast('lease.issued', { mid, lease_id: payload.lease_id, expires_at: payload.expires_at, alg: 'HS256' });
+        return lease;
+    }
+    // E2 format: Ed25519 signature over payload_b64url bytes (not decoded JSON)
+    const lease = `E2.${payloadB64}.${sig}`;
     incMetric('license_offline_leases_issued_total');
-    sseBroadcast('lease.issued', { mid, lease_id: payload.lease_id, expires_at: payload.expires_at });
+    sseBroadcast('lease.issued', { mid, lease_id: payload.lease_id, expires_at: payload.expires_at, alg: 'Ed25519' });
     return lease;
 }
 function parseTagged(parts) {
@@ -1191,10 +1277,15 @@ scheduleDailyTask('weekly_report', 8, 0, () => {
 }, { dayOfWeek: 1 });
 
 // ── TCP License Server ────────────────────────────────────────────────────────
-function tcpReply(socket, plain) {
+function tcpReply(socket, plain, options = {}) {
     try {
         if (socket.destroyed) return;
-        socket.end(tcpEncrypt(String(plain || 'DENY')));
+        const payload = tcpEncrypt(String(plain || 'DENY'));
+        if (options.keepOpen === true) {
+            socket.write(payload);
+        } else {
+            socket.end(payload);
+        }
     } catch {
         try { socket.destroy(); } catch {}
     }
@@ -1314,159 +1405,6 @@ function handleTcpRequest(socket, ip, raw) {
         return;
     }
 
-    // ── AUTH ──────────────────────────────────────────────────────────────
-    if (cmd === 'AUTH' && parts[1]) {
-        const mid = parts[1];
-        const sentKey = normalizeLicenseKey(parts[2] || '');
-        if (!isValidMachineId(mid)) {
-            tcpReply(socket, 'DENY');
-            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (invalid machine id)`);
-            tcpRlFail(ip);
-            return;
-        }
-
-        const db = loadDB();
-        let entry = db[mid];
-        let justRegistered = false;
-
-        if (!entry) {
-            if (!autoRegisterEnabled()) {
-                tcpReply(socket, 'DENY');
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (not registered)`);
-                tcpRlFail(ip);
-                return;
-            }
-            const newKey = generateLicenseKey();
-            entry = {
-                max_players: DEFAULT_PLAYERS,
-                tier: 'basic',
-                note: 'Auto-registered',
-                added: now(),
-                revoked: false,
-                auto: true,
-                peak_players: 0,
-                license_key: newKey,
-                zombie: false,
-            };
-            db[mid] = entry;
-            saveDB(db);
-            justRegistered = true;
-            log('INFO', `AUTH AUTO   ${ip}  [${mid}]  tier=basic max=${DEFAULT_PLAYERS}  key=${newKey}`);
-            sendTelegram(`🆕 <b>Auto-registered</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: Basic · Max: ${DEFAULT_PLAYERS} players · Không giới hạn ngày\nKey: ${newKey}`);
-        }
-
-        if (entry.revoked) {
-            revokeSessionsForMachine(mid);
-            tcpReply(socket, 'DENY');
-            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (revoked)`);
-            tcpRlFail(ip);
-            return;
-        }
-        if (isExpired(entry)) {
-            revokeSessionsForMachine(mid);
-            tcpReply(socket, 'DENY');
-            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (expired)`);
-            dispatchWebhook('license.expired', { mid, ip });
-            tcpRlFail(ip);
-            return;
-        }
-
-        if (!canAuthWithoutLicenseKey(entry, { strict: STRICT_LICENSE_KEY, justRegistered })) {
-            tcpReply(socket, 'DENY');
-            log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (missing key in strict mode)`);
-            tcpRlFail(ip);
-            return;
-        }
-
-        let shouldBootstrapKey = false;
-        const currentKey = normalizeLicenseKey(entry.license_key || '');
-        if (currentKey && !justRegistered) {
-            const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
-            const validKey = !!sentKey && (sentKey === currentKey || prev.some(p => {
-                const prevKey = normalizeLicenseKey(p?.key || '');
-                return prevKey && prevKey === sentKey && (!p.expires_at || p.expires_at > Date.now());
-            }));
-            shouldBootstrapKey = canBootstrapLicenseKey(entry, {
-                sentKey,
-                justRegistered,
-                enabled: licenseKeyBootstrapEnabled(),
-            });
-            if (!validKey && !shouldBootstrapKey) {
-                tcpReply(socket, 'DENY');
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (wrong key)`);
-                tcpRlFail(ip);
-                return;
-            }
-            if (shouldBootstrapKey) {
-                log('INFO', `AUTH BOOTSTRAP-KEY ${ip}  [${mid}]  -> sync license.key`);
-            }
-            if (!shouldBootstrapKey && sentKey && sentKey !== currentKey) {
-                log('INFO', `AUTH OLD-KEY ${ip}  [${mid}]  -> sync new key`);
-            }
-        }
-
-        if (Array.isArray(entry.allowed_ips) && entry.allowed_ips.length > 0) {
-            const allowed = entry.allowed_ips.some(a => {
-                const rule = String(a || '').trim();
-                return rule === ip || (rule.endsWith('.*') && ip.startsWith(rule.slice(0, -1)));
-            });
-            if (!allowed) {
-                tcpReply(socket, 'DENY');
-                log('WARNING', `AUTH DENY   ${ip}  [${mid}]  (IP not whitelisted)`);
-                tcpRlFail(ip);
-                return;
-            }
-        }
-
-        if (active[mid] && active[mid].ip !== ip) {
-            log('WARNING', `AUTH MULTI-IP  [${mid}]  prev=${active[mid].ip}  new=${ip}`);
-            sendTelegram(`⚠️ <b>Multi-IP Alert</b>\n<code>${mid}</code>\nPrev: ${active[mid].ip}\nNew: ${ip}\n— Possible license sharing —`);
-            dispatchWebhook('machine.multi_ip', { mid, prev_ip: active[mid].ip, new_ip: ip });
-        }
-
-        const maxPl = getMaxPlayers(entry);
-        const token = makeToken(mid, maxPl);
-        let agentTok = '';
-        try { agentTok = agent.getOrCreateToken(mid) || ''; }
-        catch (e) { log('WARNING', `AGENT TOKEN FAIL [${mid}] ${e.message}`); }
-        if (!isValidAgentToken(agentTok)) agentTok = '';
-
-        const needSyncKey = justRegistered || shouldBootstrapKey || (currentKey && sentKey && sentKey !== currentKey);
-        let okPayload = `OK ${maxPl} ${token}`;
-        if (needSyncKey && currentKey) okPayload += ` ${currentKey}`;
-        if (agentTok) okPayload += ` ${agentTok}`;
-        tcpReply(socket, okPayload);
-
-        const wasOnline = !!active[mid];
-        active[mid] = {
-            ip,
-            players: active[mid]?.players || 0,
-            last_seen: now(),
-            uptime_start: active[mid]?.uptime_start || now(),
-        };
-        if (!wasOnline) {
-            pushHistory({ mid, event: 'online', ip });
-            sendTelegram(`🟢 <b>Server Online</b>\n<code>${mid}</code>\nIP: ${ip}\nTier: ${entry.tier} | Max: ${maxPl}`);
-            dispatchWebhook('machine.online', { mid, ip, tier: entry.tier, max_players: maxPl });
-        }
-
-        if (entry.zombie) {
-            entry.zombie = false;
-            db[mid] = entry;
-            saveDB(db);
-        }
-        tcpRlSuccess(ip);
-        incMetric('license_tcp_auth_ok_total');
-        log('INFO', `AUTH OK     ${ip}  [${mid}]  tier=${entry.tier} max=${maxPl}`);
-
-        getGeoIP(ip).then(geo => {
-            if (geo && active[mid]) {
-                active[mid].geo = geo;
-            }
-        });
-        return;
-    }
-
     // ── HB2 (session token heartbeat, no license_key on wire) ─────────────
     if (cmd === 'HB2' && parts[1] && parts[2] !== undefined) {
         const mid = parts[1];
@@ -1533,7 +1471,7 @@ function handleTcpRequest(socket, ip, raw) {
             sessionCheck.state.last_lease_issued_at = nowMs;
         }
         persistSession(sessionCheck.session_id, sessionCheck.state);
-        tcpReply(socket, `OK2 ${maxPl} EXP:${sessionCheck.state.expires_at} SERVER_TIME:${nowMs}${extra}${leaseExtra}`);
+        tcpReply(socket, `OK2 ${maxPl} EXP:${sessionCheck.state.expires_at} SERVER_TIME:${nowMs}${extra}${leaseExtra}`, { keepOpen: true });
 
         active[mid] = {
             ...active[mid],
@@ -1547,142 +1485,6 @@ function handleTcpRequest(socket, ip, raw) {
         sseBroadcast('machine.hb', { mid, ip, players: cnt, max_players: maxPl, exp: sessionCheck.state.expires_at });
         if (extra || shouldLogHeartbeat(mid)) {
             log('INFO', `HB2 OK      ${ip}  [${mid}]  players=${cnt}/${maxPl}${extra ? ' +' + extra : ''}`);
-        }
-        return;
-    }
-
-    // ── HB ────────────────────────────────────────────────────────────────
-    if (cmd === 'HB' && parts[1] && parts[2] !== undefined) {
-        const mid = parts[1];
-        const rawCnt = Number.parseInt(parts[2], 10);
-        const cnt = Number.isFinite(rawCnt) ? Math.max(0, Math.min(rawCnt, MAX_PLAYERS_LIMIT)) : 0;
-        if (!isValidMachineId(mid)) {
-            tcpReply(socket, 'DENY');
-            log('WARNING', `HB DENY     ${ip}  [${mid}]  (invalid machine id)`);
-            tcpRlFail(ip);
-            return;
-        }
-
-        const db = loadDB();
-        const entry = db[mid];
-        if (!entry || entry.revoked) {
-            revokeSessionsForMachine(mid);
-            tcpReply(socket, 'REVOKE');
-            if (active[mid]) {
-                pushHistory({ mid, event: 'offline', ip, reason: 'revoked' });
-                dispatchWebhook('license.revoked', { mid, ip });
-            }
-            delete active[mid];
-            log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (revoked)`);
-            return;
-        }
-        if (isExpired(entry)) {
-            revokeSessionsForMachine(mid);
-            tcpReply(socket, 'REVOKE');
-            if (active[mid]) {
-                pushHistory({ mid, event: 'offline', ip, reason: 'expired' });
-                dispatchWebhook('license.expired', { mid, ip });
-            }
-            delete active[mid];
-            log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (expired)`);
-            return;
-        }
-
-        normalizeMachineEntry(entry);
-
-        const hbKey = normalizeLicenseKey(parts[3] || '');
-        const currentKey = normalizeLicenseKey(entry.license_key || '');
-        let hbKeyNeedsSync = false;
-        if (hbKey && currentKey) {
-            const prev = Array.isArray(entry.previous_keys) ? entry.previous_keys : [];
-            const validHbKey = hbKey === currentKey || prev.some(p => {
-                const prevKey = normalizeLicenseKey(p?.key || '');
-                return prevKey && prevKey === hbKey && (!p.expires_at || p.expires_at > Date.now());
-            });
-            if (!validHbKey) {
-                tcpReply(socket, 'REVOKE');
-                log('WARNING', `HB REVOKE   ${ip}  [${mid}]  (wrong heartbeat key)`);
-                tcpRlFail(ip);
-                return;
-            }
-            hbKeyNeedsSync = hbKey !== currentKey;
-        }
-
-        const maxPl = getMaxPlayers(entry);
-        let dbChanged = false;
-        if (cnt > maxPl) {
-            if (!entry._alertOver) {
-                entry._alertOver = true;
-                dbChanged = true;
-                sendTelegram(`🚨 <b>Player Over Limit</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players (over by ${cnt - maxPl})\n— Client tự chặn login mới —`);
-                dispatchWebhook('players.over', { mid, ip, players: cnt, max_players: maxPl });
-            }
-            log('WARNING', `HB OVER     ${ip}  [${mid}]  players=${cnt}>${maxPl}  (soft-limit, không revoke)`);
-        } else if (cnt < Math.floor(maxPl * 0.9) && entry._alertOver) {
-            entry._alertOver = false;
-            dbChanged = true;
-        }
-
-        if (cnt > (entry.peak_players || 0)) {
-            entry.peak_players = cnt;
-            dbChanged = true;
-        }
-
-        if (maxPl > 0 && cnt >= Math.floor(maxPl * 0.8) && !entry._alert80) {
-            entry._alert80 = true;
-            dbChanged = true;
-            sendTelegram(`⚡ <b>Player Alert 80%</b>\n<code>${mid}</code>\n${cnt}/${maxPl} players`);
-            dispatchWebhook('players.high', { mid, ip, players: cnt, max_players: maxPl });
-        } else if (maxPl > 0 && cnt < Math.floor(maxPl * 0.7) && entry._alert80) {
-            entry._alert80 = false;
-            dbChanged = true;
-        }
-
-        const nowMs = Date.now();
-        if (!entry.last_hb_ts || nowMs - entry.last_hb_ts >= HB_DB_TOUCH_MS) {
-            entry.last_hb_ts = nowMs;
-            dbChanged = true;
-        }
-        if (dbChanged) {
-            db[mid] = entry;
-            saveDB(db);
-        }
-
-        pushStat(mid, cnt);
-
-        if (active[mid] && active[mid].ip && active[mid].ip !== ip) {
-            log('WARNING', `HB IP-CHANGE [${mid}] prev=${active[mid].ip} new=${ip}`);
-        }
-
-        let hbExtra = '';
-        const pendingMax = _pendingMaxPlayers.get(mid);
-        const pendingKey = normalizeLicenseKey(_pendingKey.get(mid) || '');
-        const keyToPush = pendingKey || (hbKeyNeedsSync ? currentKey : '');
-
-        if (pendingMax !== undefined && pendingMax > 0 && pendingMax <= MAX_PLAYERS_LIMIT) {
-            hbExtra += ` CFGMAX:${pendingMax}`;
-            _pendingMaxPlayers.delete(mid);
-            log('INFO', `HB CFGMAX   [${mid}]  max_players -> ${pendingMax} (real-time push)`);
-        }
-        if (keyToPush) {
-            hbExtra += ` KEY:${keyToPush}`;
-            _pendingKey.delete(mid);
-            log('INFO', `HB KEY-SYNC [${mid}]  license_key updated (real-time push)`);
-        }
-
-        tcpReply(socket, `OK ${maxPl}${hbExtra}`);
-        active[mid] = {
-            ...active[mid],
-            ip,
-            players: cnt,
-            last_seen: now(),
-            uptime_start: active[mid]?.uptime_start || now(),
-        };
-        tcpRlSuccess(ip);
-        incMetric('license_tcp_hb_ok_total');
-        sseBroadcast('machine.hb', { mid, ip, players: cnt, max_players: maxPl });
-        if (hbExtra || shouldLogHeartbeat(mid)) {
-            log('INFO', `HB OK       ${ip}  [${mid}]  players=${cnt}/${maxPl}${hbExtra ? ' +' + hbExtra : ''}`);
         }
         return;
     }
@@ -1792,28 +1594,38 @@ function configureLicenseSocket(socket) {
     }
 
     let buf = '';
-    let handled = false;
     socket.on('data', (chunk) => {
-        if (handled) return;
         buf += chunk.toString('utf8');
         if (buf.length > TCP_MAX_BUFFER_BYTES) {
-            handled = true;
             log('WARNING', `TLS FRAME OVERSIZE ${ip} len=${buf.length}`);
             tcpRlFail(ip);
             socket.destroy();
             return;
         }
-        const nl = buf.indexOf('\n');
-        if (nl === -1) return;
-        const raw = buf.slice(0, nl + 1);
-        handled = true;
-        try {
-            handleTcpRequest(socket, ip, raw);
-        } catch (err) {
-            log('ERROR', `TLS LICENSE HANDLER ERROR ${ip}: ${err.message}`);
-            socket.destroy();
+
+        while (!socket.destroyed) {
+            const nl = buf.indexOf('\n');
+            if (nl === -1) break;
+            const raw = buf.slice(0, nl + 1);
+            buf = buf.slice(nl + 1);
+            try {
+                handleTcpRequest(socket, ip, raw);
+            } catch (err) {
+                log('ERROR', `TLS LICENSE HANDLER ERROR ${ip}: ${err.message}`);
+                socket.destroy();
+                return;
+            }
+            // Fatal replies and AUTH2 use socket.end(); HB2 OK keeps the socket open.
+            if (socket.destroyed || socket.writableEnded) return;
+            if (buf.length > TCP_MAX_BUFFER_BYTES) {
+                log('WARNING', `TLS FRAME OVERSIZE ${ip} len=${buf.length}`);
+                tcpRlFail(ip);
+                socket.destroy();
+                return;
+            }
         }
     });
+
 
     socket.on('error', () => {});
     socket.on('timeout', () => socket.destroy());
