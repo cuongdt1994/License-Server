@@ -30,7 +30,7 @@
       else if (/ERROR/i.test(l)) cls = 'color:#f87171';
       else if (/SECURITY/i.test(l)) cls = 'color:#f87171;font-weight:700';
       else if (/INFO.*OK/i.test(l)) cls = 'color:#34d399';
-    %><div style="<%= cls %>"><%- l.replace(/</g,'&lt;').replace(/>/g,'&gt;') %></div><% }) %></pre>
+    %><div style="<%= cls %>"><%= l %></div><% }) %></pre>
     <% } %>
   </div>
 </div>

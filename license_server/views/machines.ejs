@@ -230,7 +230,7 @@
                 <button type="button" class="icon-btn icon-btn-info" title="Gia hạn" data-machine-action="renew" data-mid="<%= row.mid %>" aria-label="Gia hạn">📅</button>
                 <button type="button" class="icon-btn icon-btn-purple" title="License key" data-machine-action="key" data-mid="<%= row.mid %>" data-license-key="<%= row.license_key || '' %>" aria-label="Key">🔑</button>
                 <button type="button" class="icon-btn icon-btn-muted" title="Transfer" data-machine-action="transfer" data-mid="<%= row.mid %>" aria-label="Transfer">↔️</button>
-                <form method="POST" action="/revoke" style="display:inline" onsubmit="return confirm(<%- JSON.stringify('Thu hồi license:\n' + row.mid + '\n\nServer sẽ tắt trong ≤5 phút.') %>)">
+                <form method="POST" action="/revoke" style="display:inline" class="js-confirm-revoke" data-mid="<%= row.mid %>">
                   <input type="hidden" name="mid" value="<%= row.mid %>">
                   <button type="submit" class="icon-btn icon-btn-danger" title="Revoke" aria-label="Revoke">🚫</button>
                 </form>
@@ -240,7 +240,7 @@
                   <button type="submit" class="icon-btn icon-btn-success" title="Khôi phục" aria-label="Restore">🔄</button>
                 </form>
               <% } %>
-              <form method="POST" action="/delete-machine" style="display:inline" onsubmit="return confirm(<%- JSON.stringify('XÓA HOÀN TOÀN:\n' + row.mid + '\n\nWhitelist, agent, stats, history sẽ bị gỡ.') %>)">
+              <form method="POST" action="/delete-machine" style="display:inline" class="js-confirm-delete" data-mid="<%= row.mid %>">
                 <input type="hidden" name="mid" value="<%= row.mid %>">
                 <button type="submit" class="icon-btn icon-btn-danger" title="Xóa" aria-label="Delete">🗑</button>
               </form>
@@ -569,6 +569,25 @@ function fallbackCopy(btn, key) {
   } catch(e) {}
   document.body.removeChild(ta);
 }
+
+// Safe confirm handlers — avoids XSS via unescaped output in inline onsubmit
+document.addEventListener('submit', function(e) {
+  var form = e.target.closest('form.js-confirm-revoke');
+  if (form) {
+    var mid = form.getAttribute('data-mid') || '';
+    if (!confirm('Thu hồi license:\n' + mid + '\n\nServer sẽ tắt trong ≤5 phút.')) {
+      e.preventDefault();
+    }
+    return;
+  }
+  form = e.target.closest('form.js-confirm-delete');
+  if (form) {
+    var mid = form.getAttribute('data-mid') || '';
+    if (!confirm('XÓA HOÀN TOÀN:\n' + mid + '\n\nWhitelist, agent, stats, history sẽ bị gỡ.')) {
+      e.preventDefault();
+    }
+  }
+});
 </script>
 </body>
 </html>

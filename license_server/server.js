@@ -134,13 +134,22 @@ function clampEnvPort(value, fallback) {
 // với client để tránh lệch key khi runtime_secret được sinh khác môi trường. Nếu cần
 // override có kiểm soát, đặt LICENSE_TCP_SECRET + LICENSE_ALLOW_RUNTIME_TCP_SECRET=1
 // và build lại client cùng secret đó.
-const TCP_KEY_SHARE_A = Buffer.from([
+// ── TCP key shares ─────────────────────────────────────────────────────────
+// XOR-shares dùng chung với license_check.cpp để derive TCP secret mặc định.
+// Có thể override qua LICENSE_TCP_KEY_SHARE_A / LICENSE_TCP_KEY_SHARE_B (hex 64 chars).
+// Nếu không set, dùng embedded default (đồng bộ với client binary).
+function loadKeyShare(envName, defaultBytes) {
+    const hex = String(process.env[envName] || '').trim();
+    if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
+    return Buffer.from(defaultBytes);
+}
+const TCP_KEY_SHARE_A = loadKeyShare('LICENSE_TCP_KEY_SHARE_A', [
     0x98,0x77,0xE5,0x2C,0x80,0x16,0x53,0xF6,
     0x02,0x7E,0x9D,0x77,0xD1,0x1C,0x7A,0xF4,
     0x6A,0x8D,0xB9,0x16,0x52,0xC7,0x6D,0xFD,
     0x22,0x17,0x85,0x4E,0xBC,0x54,0xE6,0x6D,
 ]);
-const TCP_KEY_SHARE_B = Buffer.from([
+const TCP_KEY_SHARE_B = loadKeyShare('LICENSE_TCP_KEY_SHARE_B', [
     0xD3,0x1F,0x8A,0x42,0xE7,0x55,0x3C,0x91,
     0x6B,0x2D,0xF8,0x14,0xA3,0x79,0x0E,0xC6,
     0x5A,0xBF,0x8D,0x37,0x12,0xE4,0x49,0xD8,
@@ -783,6 +792,39 @@ function autoRegisterEnabled(env = process.env) {
 function csvSafeCell(value) {
     const text = String(value ?? '');
     return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+}
+
+// ── Input sanitization ─────────────────────────────────────────────────────
+function sanitizeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function containsPathTraversal(value) {
+    const normalized = String(value || '').replace(/\\/g, '/');
+    const segments = normalized.split('/');
+    for (const seg of segments) {
+        if (seg === '..' || seg === '...') return true;
+    }
+    return false;
+}
+
+// ── Safe base URL resolver ──────────────────────────────────────────────────
+// Luôn ưu tiên settings.public_url. Nếu không có, validate Host header trước khi dùng.
+function resolvePublicBase(req) {
+    const configured = String(loadSettings().public_url || '').trim();
+    if (configured) return configured.replace(/\/+$/, '');
+    const host = String(req.get('host') || '').trim();
+    // Validate host: chỉ chấp nhận [hostname]:[port] hợp lệ, không chứa ký tự lạ
+    if (/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::\d{1,5})?$/.test(host)) {
+        return (req.protocol || 'https') + '://' + host;
+    }
+    // Fallback an toàn: dùng bind host + port
+    return `http://${BIND_HOST}:${WEB_PORT}`;
 }
 
 // ── Maintenance mode (persistent via settings) ────────────────────────────────
@@ -1729,6 +1771,7 @@ function saveInitialSetup({ username, password, confirmPassword, dataDir }) {
     if (pass.length < 10) return { ok: false, error: 'Mật khẩu cần ít nhất 10 ký tự.' };
     if (pass !== confirm) return { ok: false, error: 'Xác nhận mật khẩu không khớp.' };
     if (!dirInput) return { ok: false, error: 'Vui lòng chọn thư mục lưu data.' };
+    if (containsPathTraversal(dirInput)) return { ok: false, error: 'Đường dẫn không hợp lệ (chứa ..).' };
 
     let targetInfo;
     try {
@@ -1810,15 +1853,19 @@ app.post('/setup', (req, res) => {
         dataDir: req.body.data_dir,
     });
     if (!result.ok) {
+        // Sanitize user-provided data_dir before reflecting it in the form
+        const safeDir = containsPathTraversal(req.body.data_dir || '')
+            ? suggestedDataDir()
+            : sanitizeHtml(req.body.data_dir || '');
         return res.render('setup', {
             error: result.error,
-            suggestedDataDir: req.body.data_dir || suggestedDataDir(),
+            suggestedDataDir: safeDir || suggestedDataDir(),
             result: null,
         });
     }
     auditEvent(AUDIT_FILE, {
         action: 'setup.created',
-        user: req.body.username,
+        user: sanitizeHtml(req.body.username || ''),
         ip: clientIp(req),
         details: { dataDir: result.dataDir, restartRequired: result.restartRequired },
     });
@@ -2750,7 +2797,7 @@ app.get('/machine/:mid', auth, (req, res) => {
         safeActions: commandPolicy.getSafeActions(),
         shellEnabled: settings.advanced_shell_enabled === true,
         shellTimeout: commandPolicy.clampTimeout(settings.agent_shell_timeout || 120, 120),
-        publicBase: req.protocol + '://' + req.get('host'),
+        publicBase: resolvePublicBase(req),
         expiry: expiryInfo(entry), expired: isExpired(entry),
         flash: consumeFlash(req.session),
     });
@@ -2763,7 +2810,7 @@ app.post('/machine/:mid/agent-install', auth, (req, res) => {
     if (!db[mid]) { req.session.flash = { type: 'danger', msg: 'Machine chưa được cấp license.' }; return res.redirect('/machines'); }
     const tok = agent.getOrCreateToken(mid);
     if (req.body.server_dir) agent.setServerDir(mid, req.body.server_dir);
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '');
+    const base = resolvePublicBase(req);
     const oneLiner = `curl -fsSL "${base}/agent/install.sh?mid=${encodeURIComponent(mid)}&token=${tok}" | sudo bash`;
     req.session.flash = {
         type: 'success',
@@ -2813,7 +2860,7 @@ app.get('/agent/install.sh', (req, res) => {
     if (!mid || !token || !agent.verifyToken(mid, token)) {
         return res.status(403).type('text/plain').send('# invalid mid/token\nexit 1\n');
     }
-    const base = (loadSettings().public_url || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '');
+    const base = resolvePublicBase(req);
     res.type('text/plain').send(
         require('./agent_manager').buildInstallScript({ serverUrl: base, mid, token })
     );

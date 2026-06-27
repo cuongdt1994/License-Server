@@ -43,6 +43,11 @@ function resolveDataDirInfo({ appDir = __dirname, env = process.env } = {}) {
         throw new Error('LICENSE_DATA_DIR must be an absolute path.');
     }
 
+    // Block path traversal via .. segments
+    if (configured.replace(/\\/g, '/').split('/').some(s => s === '..' || s === '...')) {
+        throw new Error('LICENSE_DATA_DIR must not contain path traversal (..).');
+    }
+
     const resolved = path.resolve(configured);
     const resolvedAppDir = path.resolve(appDir);
     if (isInside(resolved, resolvedAppDir)) {

@@ -561,9 +561,14 @@
   </nav>
 </div>
 
+<meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
+
 <!-- CSRF injection -->
 <script>
-window._csrfToken = <%- JSON.stringify(typeof csrfToken !== 'undefined' ? csrfToken : '') %>;
+window._csrfToken = (function() {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute('content') : '';
+})();
 function injectCsrfTokens() {
   const token = window._csrfToken;
   if (!token) return;
