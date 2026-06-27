@@ -4,9 +4,9 @@ const fs   = require('fs');
 const path = require('path');
 
 const appDir      = __dirname;
-const runtimeRoot = process.env.LICENSE_RUNTIME_ROOT || path.join(appDir, '..', 'runtime');
-const dataDir     = process.env.LICENSE_DATA_DIR     || path.join(runtimeRoot, 'license-server-data');
-const logDir      = process.env.LICENSE_LOG_DIR      || path.join(runtimeRoot, 'logs');
+const runtimeRoot = process.env.LICENSE_RUNTIME_ROOT ? path.normalize(process.env.LICENSE_RUNTIME_ROOT) : path.join(appDir, '..', 'runtime');
+const dataDir     = process.env.LICENSE_DATA_DIR     ? path.normalize(process.env.LICENSE_DATA_DIR) : path.normalize(path.join(runtimeRoot, 'license-server-data'));
+const logDir      = process.env.LICENSE_LOG_DIR      ? path.normalize(process.env.LICENSE_LOG_DIR) : path.normalize(path.join(runtimeRoot, 'logs'));
 
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(logDir,  { recursive: true });

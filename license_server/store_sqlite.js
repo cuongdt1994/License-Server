@@ -1,8 +1,9 @@
 'use strict';
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
 const BetterSqlite3 = require('better-sqlite3');
+const { safeResolve } = require('./safe_fs');
 
 function toJson(value) {
     return JSON.stringify(value === undefined ? null : value);
@@ -13,12 +14,13 @@ function fromJson(value, fallback) {
 }
 
 function readLegacyJson(file, fallback) {
-    if (!fs.existsSync(file)) return fallback;
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+    const normalized = path.normalize(file);
+    if (!fs.existsSync(normalized)) return fallback;
+    try { return JSON.parse(fs.readFileSync(normalized, 'utf8')); } catch { return fallback; }
 }
 
 function safeStatSize(file) {
-    try { return fs.statSync(file).size; } catch { return 0; }
+    try { return fs.statSync(path.normalize(file)).size; } catch { return 0; }
 }
 
 const HISTORY_LIMIT_DEPLOY = 20;
@@ -26,8 +28,8 @@ const HISTORY_LIMIT_DEPLOY = 20;
 class SqliteStore {
     constructor(options = {}) {
         this.driver = 'sqlite';
-        this.dataDir = options.dataDir || process.cwd();
-        this.dbPath = options.dbPath || path.join(this.dataDir, 'license.sqlite3');
+        this.dataDir = path.normalize(options.dataDir || process.cwd());
+        this.dbPath = path.normalize(options.dbPath || path.join(this.dataDir, 'license.sqlite3'));
         this.log = typeof options.log === 'function' ? options.log : () => {};
         this.saveTotal = 0;
         this.saveFailTotal = 0;
@@ -37,14 +39,29 @@ class SqliteStore {
         this.stmt = Object.create(null);
     }
 
-    init() {
-        fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
-        try { fs.chmodSync(this.dataDir, 0o700); } catch {}
+    /** Resolve a path safely inside this.dataDir. */
+    _safeFile(relativePath) {
+        return safeResolve(this.dataDir, relativePath);
+    }
 
-        this.db = new BetterSqlite3(this.dbPath, {
+    /** Resolve a path safely inside this.dataDir, returning path.normalize result. */
+    _safeFilePath(fullPath) {
+        const normalized = path.normalize(fullPath);
+        // Verify containment by resolving relative and re-joining
+        const rel = path.relative(this.dataDir, normalized);
+        return safeResolve(this.dataDir, rel);
+    }
+
+    init() {
+        const dir = this._safeFilePath(this.dataDir);
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        try { fs.chmodSync(dir, 0o700); } catch {}
+
+        const dbPath = this._safeFilePath(this.dbPath);
+        this.db = new BetterSqlite3(dbPath, {
             timeout: Number.parseInt(process.env.LICENSE_SQLITE_BUSY_TIMEOUT_MS || '5000', 10),
         });
-        try { fs.chmodSync(this.dbPath, 0o600); } catch {}
+        try { fs.chmodSync(dbPath, 0o600); } catch {}
 
         this.db.pragma('journal_mode = WAL');
         this.db.pragma(`synchronous = ${String(process.env.LICENSE_SQLITE_SYNCHRONOUS || 'NORMAL').toUpperCase()}`);
@@ -260,13 +277,13 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
         if (this.db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return;
 
         const files = {
-            machines: path.join(this.dataDir, 'whitelist.json'),
-            settings: path.join(this.dataDir, 'settings.json'),
-            plans: path.join(this.dataDir, 'plans.json'),
-            bans: path.join(this.dataDir, 'bans.json'),
-            stats: path.join(this.dataDir, 'stats.json'),
-            history: path.join(this.dataDir, 'history.json'),
-            admin: path.join(this.dataDir, 'admin.json'),
+            machines: this._safeFile('whitelist.json'),
+            settings: this._safeFile('settings.json'),
+            plans:    this._safeFile('plans.json'),
+            bans:     this._safeFile('bans.json'),
+            stats:    this._safeFile('stats.json'),
+            history:  this._safeFile('history.json'),
+            admin:    this._safeFile('admin.json'),
         };
         this._write(() => {
             if (this.db.prepare('SELECT COUNT(*) n FROM machines').get().n === 0) {
@@ -307,14 +324,14 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
             }
             // Agent tokens
             if (this.db.prepare('SELECT COUNT(*) n FROM agent_tokens').get().n === 0) {
-                const tokens = readLegacyJson(path.join(this.dataDir, 'agent_tokens.json'), {});
+                const tokens = readLegacyJson(this._safeFile('agent_tokens.json'), {});
                 for (const [mid, val] of Object.entries(tokens || {})) {
                     if (val && val.token) this.stmt.agentTokenUpsert.run(mid, val.token, val.created || new Date().toISOString(), val.rotated_at || val.created || new Date().toISOString());
                 }
             }
             // Agent state
             if (this.db.prepare('SELECT COUNT(*) n FROM agent_state').get().n === 0) {
-                const state = readLegacyJson(path.join(this.dataDir, 'agent_state.json'), {});
+                const state = readLegacyJson(this._safeFile('agent_state.json'), {});
                 const ts = Date.now();
                 for (const [mid, val] of Object.entries(state || {})) {
                     this.stmt.agentStateUpsert.run(mid, val.last_seen || null, val.agent_ip || null, val.agent_ver || null, val.server_dir || 'pwserver', ts);
@@ -322,7 +339,7 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
             }
             // Deploy history
             if (this.db.prepare('SELECT COUNT(*) n FROM deploy_history').get().n === 0) {
-                const deploys = readLegacyJson(path.join(this.dataDir, 'deploy_history.json'), []);
+                const deploys = readLegacyJson(this._safeFile('deploy_history.json'), []);
                 for (const entry of (Array.isArray(deploys) ? deploys : [])) {
                     this.stmt.deployHistoryInsert.run(entry.startedAt || new Date().toISOString(), toJson(entry));
                 }
@@ -332,13 +349,13 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
         });
 
         const allLegacyFiles = Object.values(files).concat([
-            path.join(this.dataDir, 'agent_tokens.json'),
-            path.join(this.dataDir, 'agent_state.json'),
-            path.join(this.dataDir, 'deploy_history.json'),
+            this._safeFile('agent_tokens.json'),
+            this._safeFile('agent_state.json'),
+            this._safeFile('deploy_history.json'),
         ]);
         const existing = allLegacyFiles.filter(f => fs.existsSync(f));
         for (const file of existing) {
-            const dest = `${file}.migrated-backup`;
+            const dest = path.normalize(`${file}.migrated-backup`);
             try {
                 if (!fs.existsSync(dest)) fs.renameSync(file, dest);
                 else fs.unlinkSync(file);
@@ -589,9 +606,13 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
     }
 
     async backup(destination) {
-        fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-        await this.db.backup(destination);
-        const verifyDb = new BetterSqlite3(destination, { readonly: true, fileMustExist: true });
+        const safeDest = path.normalize(destination);
+        const destDir = path.dirname(safeDest);
+        // Verify the backup destination is inside the data directory
+        const verifiedDir = safeResolve(this.dataDir, path.relative(this.dataDir, destDir));
+        fs.mkdirSync(verifiedDir, { recursive: true, mode: 0o700 });
+        await this.db.backup(safeDest);
+        const verifyDb = new BetterSqlite3(safeDest, { readonly: true, fileMustExist: true });
         try {
             const rows = verifyDb.pragma('quick_check');
             const result = rows.map(row => Object.values(row)[0]).join('; ');
@@ -599,22 +620,23 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
         } finally {
             verifyDb.close();
         }
-        try { fs.chmodSync(destination, 0o600); } catch {}
+        try { fs.chmodSync(safeDest, 0o600); } catch {}
         this.lastBackupAt = Date.now();
-        this.lastBackupFile = destination;
-        return destination;
+        this.lastBackupFile = safeDest;
+        return safeDest;
     }
 
     health() {
         const quick = this.quickCheck();
         let journalMode = 'unknown';
         try { journalMode = String(this.db.pragma('journal_mode', { simple: true })); } catch {}
+        const dbPath = path.normalize(this.dbPath);
         return {
             driver: 'sqlite',
-            db_path: this.dbPath,
-            db_size_bytes: safeStatSize(this.dbPath),
-            wal_size_bytes: safeStatSize(`${this.dbPath}-wal`),
-            shm_size_bytes: safeStatSize(`${this.dbPath}-shm`),
+            db_path: dbPath,
+            db_size_bytes: safeStatSize(dbPath),
+            wal_size_bytes: safeStatSize(`${dbPath}-wal`),
+            shm_size_bytes: safeStatSize(`${dbPath}-shm`),
             journal_mode: journalMode,
             quick_check: quick.result,
             ok: quick.ok && journalMode.toLowerCase() === 'wal',

@@ -22,12 +22,14 @@ function _pushHistory(entry) {
 
 function resolveBin(name, extraPaths = []) {
     const envKey = name.toUpperCase() + '_CMD';
-    if (process.env[envKey] && fs.existsSync(process.env[envKey])) return process.env[envKey];
+    const envPath = process.env[envKey] ? path.normalize(process.env[envKey]) : '';
+    if (envPath && fs.existsSync(envPath)) return envPath;
     const candidates = process.platform === 'win32'
         ? [path.join(process.env.APPDATA || '', 'npm', `${name}.cmd`), `${name}.cmd`]
         : ['/usr/bin/' + name, '/usr/local/bin/' + name, '/snap/bin/' + name, ...extraPaths];
     for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) return candidate;
+        const normalized = path.normalize(candidate);
+        if (fs.existsSync(normalized)) return normalized;
     }
     return name;
 }
@@ -77,14 +79,17 @@ function createDeployManager(options = {}) {
     let lastCheck     = null;
 
     // Migrate legacy JSON history to SQLite on first load
-    if (options.historyFile && fs.existsSync(options.historyFile)) {
-        try {
-            const legacy = JSON.parse(fs.readFileSync(options.historyFile, 'utf8'));
-            if (Array.isArray(legacy)) {
-                for (const entry of legacy) _pushHistory(entry);
-                fs.unlinkSync(options.historyFile);
-            }
-        } catch {}
+    if (options.historyFile) {
+        const historyFile = path.normalize(options.historyFile);
+        if (fs.existsSync(historyFile)) {
+            try {
+                const legacy = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+                if (Array.isArray(legacy)) {
+                    for (const entry of legacy) _pushHistory(entry);
+                    fs.unlinkSync(historyFile);
+                }
+            } catch {}
+        }
     }
 
     async function runStep(name, cmd, args) {

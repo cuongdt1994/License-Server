@@ -55,9 +55,9 @@ const DATA_DIR_INFO   = resolveDataDirInfo({ appDir: __dirname });
 const DATA_DIR        = DATA_DIR_INFO.dir;
 
 // ── Init dirs + SQLite store (phải có trước khi resolve session secret) ──────
-const SQLITE_FILE     = path.join(DATA_DIR, 'license.sqlite3');
-const BACKUP_DIR      = path.join(DATA_DIR, 'backups');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+const SQLITE_FILE     = path.normalize(path.join(DATA_DIR, 'license.sqlite3'));
+const BACKUP_DIR      = path.normalize(path.join(DATA_DIR, 'backups'));
+fs.mkdirSync(path.normalize(DATA_DIR), { recursive: true });
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 let _storeInstance = null;
@@ -187,8 +187,8 @@ function resolveTcpSecret(runtimeSecret) {
 }
 const TCP_SECRET_INFO = resolveTcpSecret(RUNTIME_SECRETS.tcpSecret);
 const SECRET_KEY      = TCP_SECRET_INFO.key;
-const LOG_FILE        = path.join(DATA_DIR, 'license.log');
-const AUDIT_FILE      = path.join(DATA_DIR, 'audit.log');
+const LOG_FILE        = path.normalize(path.join(DATA_DIR, 'license.log'));
+const AUDIT_FILE      = path.normalize(path.join(DATA_DIR, 'audit.log'));
 RUNTIME.secretSources = RUNTIME_SECRETS.sources;
 RUNTIME.secretFile = RUNTIME_SECRETS.file;
 RUNTIME.tcpSecretSource = TCP_SECRET_INFO.source;
@@ -634,7 +634,7 @@ function verifyAdminLogin(username, password) {
 function log(level, msg) {
     const line = `${new Date().toISOString().replace('T', ' ').slice(0, 19)}  ${level.padEnd(7)}  ${msg}`;
     console.log(line);
-    fs.appendFileSync(LOG_FILE, line + '\n');
+    fs.appendFileSync(path.normalize(LOG_FILE), line + '\n');
 }
 _storeLogger = log;  // wire up store logging after log() is defined
 
@@ -847,14 +847,14 @@ async function doBackup(force = false) {
     if (!force && _lastBackupDate === today) return null;
     if (_backupInFlight) return _backupInFlight;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dest = path.join(BACKUP_DIR, `license_${stamp}.sqlite3`);
+    const dest = path.normalize(path.join(BACKUP_DIR, `license_${stamp}.sqlite3`));
     _backupInFlight = getStore().backup(dest)
         .then(() => {
             _lastBackupDate = today;
-            const list = fs.readdirSync(BACKUP_DIR)
+            const list = fs.readdirSync(path.normalize(BACKUP_DIR))
                 .filter(name => name.startsWith('license_') && name.endsWith('.sqlite3'))
                 .sort();
-            while (list.length > 30) fs.unlinkSync(path.join(BACKUP_DIR, list.shift()));
+            while (list.length > 30) fs.unlinkSync(path.normalize(path.join(BACKUP_DIR, list.shift())));
             log('INFO', `SQLite backup complete → ${dest}`);
             return dest;
         })
@@ -1581,9 +1581,12 @@ function readTlsMaterial() {
     if (!TLS_KEY_FILE || !TLS_CERT_FILE) {
         throw new Error('LICENSE_TLS_KEY_FILE and LICENSE_TLS_CERT_FILE are required; raw TCP is disabled.');
     }
-    const key = fs.readFileSync(TLS_KEY_FILE);
-    const cert = fs.readFileSync(TLS_CERT_FILE);
-    const ca = TLS_CA_FILE ? fs.readFileSync(TLS_CA_FILE) : undefined;
+    const keyPath = path.normalize(TLS_KEY_FILE);
+    const certPath = path.normalize(TLS_CERT_FILE);
+    const caPath = TLS_CA_FILE ? path.normalize(TLS_CA_FILE) : '';
+    const key = fs.readFileSync(keyPath);
+    const cert = fs.readFileSync(certPath);
+    const ca = caPath ? fs.readFileSync(caPath) : undefined;
     const x509 = new crypto.X509Certificate(cert);
     const validToMs = Date.parse(x509.validTo);
     if (!Number.isFinite(validToMs) || validToMs <= Date.now()) {
@@ -2358,8 +2361,9 @@ app.post('/plans/delete', auth, (req, res) => {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function operationsSnapshot() {
-    const backups = fs.existsSync(BACKUP_DIR)
-        ? fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('license_') && f.endsWith('.sqlite3')).sort()
+    const backupDir = path.normalize(BACKUP_DIR);
+    const backups = fs.existsSync(backupDir)
+        ? fs.readdirSync(backupDir).filter(f => f.startsWith('license_') && f.endsWith('.sqlite3')).sort()
         : [];
     const latestBackup = backups.length ? backups[backups.length - 1] : null;
     const memory = process.memoryUsage();
@@ -2661,7 +2665,8 @@ app.get('/history', auth, (req, res) => {
 // ── Logs ──────────────────────────────────────────────────────────────────────
 app.get('/logs', auth, (req, res) => {
     let lines = [];
-    if (fs.existsSync(LOG_FILE)) lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-80);
+    const logFile = path.normalize(LOG_FILE);
+    if (fs.existsSync(logFile)) lines = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).slice(-80);
     res.render('logs', { lines });
 });
 
@@ -2757,7 +2762,8 @@ app.get('/export/csv', auth, (req, res) => {
 // ── API ───────────────────────────────────────────────────────────────────────
 app.get('/api/logs', auth, (req, res) => {
     let lines = [];
-    if (fs.existsSync(LOG_FILE)) lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-80);
+    const logFile = path.normalize(LOG_FILE);
+    if (fs.existsSync(logFile)) lines = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).slice(-80);
     res.json({ lines });
 });
 app.get('/api/active', auth, (req, res) => res.json(active));

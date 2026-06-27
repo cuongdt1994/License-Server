@@ -19,8 +19,9 @@ function cloneJson(value, fallback) {
 }
 
 function atomicWritePrivate(file, payload) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+    const safeFile = path.normalize(file);
+    fs.mkdirSync(path.dirname(safeFile), { recursive: true });
+    const tmp = path.normalize(`${safeFile}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`);
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {
         fs.writeFileSync(fd, payload);
@@ -29,7 +30,7 @@ function atomicWritePrivate(file, payload) {
         fs.closeSync(fd);
     }
     fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, file);
+    fs.renameSync(tmp, safeFile);
 }
 
 class JsonStore {
@@ -49,7 +50,7 @@ class JsonStore {
         this.saveFailTotal = 0;
     }
 
-    init() { fs.mkdirSync(this.dataDir, { recursive: true }); }
+    init() { fs.mkdirSync(path.normalize(this.dataDir), { recursive: true }); }
 
     _defaultFor(name) {
         if (name === 'plans' || name === 'history') return [];
@@ -57,7 +58,7 @@ class JsonStore {
     }
 
     _load(name) {
-        const file = this.files[name];
+        const file = path.normalize(this.files[name]);
         const fallback = this._defaultFor(name);
         if (!fs.existsSync(file)) return cloneJson(fallback, fallback);
         let stat;
@@ -72,7 +73,7 @@ class JsonStore {
     }
 
     _save(name, value, pretty = true) {
-        const file = this.files[name];
+        const file = path.normalize(this.files[name]);
         const payload = (pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value)) + (pretty ? '\n' : '');
         try {
             atomicWritePrivate(file, payload);

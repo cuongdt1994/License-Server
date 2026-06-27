@@ -20,12 +20,13 @@ const path = require('path');
 const DEFAULT_TCP_SECRET = 'KhongCogiSecret2024!@#$%^&*()_+=';
 
 function readJson(file) {
-    if (!fs.existsSync(file)) return {};
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+    const safeFile = path.normalize(file);
+    if (!fs.existsSync(safeFile)) return {};
+    try { return JSON.parse(fs.readFileSync(safeFile, 'utf8')); } catch { return {}; }
 }
 
 function writeJsonPrivate(file, data) {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.normalize(file), JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 function validateTcpSecret(secret) {

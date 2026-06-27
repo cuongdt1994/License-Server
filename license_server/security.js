@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const PASSWORD_ITERATIONS = 210000;
@@ -100,7 +101,7 @@ function auditEvent(file, event) {
         ip: event.ip || null,
         details: event.details || {},
     };
-    fs.appendFileSync(file, JSON.stringify(row) + '\n', { mode: 0o600 });
+    fs.appendFileSync(path.normalize(file), JSON.stringify(row) + '\n', { mode: 0o600 });
 }
 
 function securityHeaders() {
@@ -193,13 +194,13 @@ function appendAuditLine(file, rowObj) {
     const line = JSON.stringify(rowObj);
     const newHash = computeAuditChainHash(prevHash, line);
     // Format: <line>\t<chain_hash>\n
-    fs.appendFileSync(file, line + '\t' + newHash + '\n', { mode: 0o600 });
+    fs.appendFileSync(path.normalize(file), line + '\t' + newHash + '\n', { mode: 0o600 });
     saveAuditChainState(file, newHash);
 }
 
 function readAuditChainState(file) {
     const fs = require('fs');
-    const stateFile = file + '.chain';
+    const stateFile = path.normalize(file + '.chain');
     if (!fs.existsSync(stateFile)) return 'GENESIS';
     try {
         return fs.readFileSync(stateFile, 'utf8').trim() || 'GENESIS';
@@ -208,13 +209,14 @@ function readAuditChainState(file) {
 
 function saveAuditChainState(file, hash) {
     const fs = require('fs');
-    fs.writeFileSync(file + '.chain', hash, { mode: 0o600 });
+    fs.writeFileSync(path.normalize(file + '.chain'), hash, { mode: 0o600 });
 }
 
 function verifyAuditChain(file) {
     const fs = require('fs');
-    if (!fs.existsSync(file)) return { ok: true, entries: 0, migrated: false };
-    const content = fs.readFileSync(file, 'utf8');
+    const safeFile = path.normalize(file);
+    if (!fs.existsSync(safeFile)) return { ok: true, entries: 0, migrated: false };
+    const content = fs.readFileSync(safeFile, 'utf8');
     const lines = content.split('\n').filter(l => l.trim());
     if (lines.length === 0) return { ok: true, entries: 0, migrated: false };
 
@@ -238,9 +240,10 @@ function verifyAuditChain(file) {
 // toàn bộ file với chain hash cho từng dòng.
 function migrateAuditChainIfNeeded(file) {
     const fs = require('fs');
-    if (!fs.existsSync(file)) return { ok: true, entries: 0, migrated: false };
+    const safeFile = path.normalize(file);
+    if (!fs.existsSync(safeFile)) return { ok: true, entries: 0, migrated: false };
 
-    const content = fs.readFileSync(file, 'utf8');
+    const content = fs.readFileSync(safeFile, 'utf8');
     const lines = content.split('\n').filter(l => l.trim());
     if (lines.length === 0) return { ok: true, entries: 0, migrated: false };
 
@@ -261,8 +264,8 @@ function migrateAuditChainIfNeeded(file) {
     }
 
     // Write migrated file
-    fs.writeFileSync(file, newLines.join('\n') + '\n', { mode: 0o600 });
-    saveAuditChainState(file, prevHash);
+    fs.writeFileSync(safeFile, newLines.join('\n') + '\n', { mode: 0o600 });
+    saveAuditChainState(safeFile, prevHash);
 
     return { ok: true, entries: lines.length, migrated: true };
 }
@@ -270,20 +273,22 @@ function migrateAuditChainIfNeeded(file) {
 // ── Config file integrity checksums ────────────────────────────────────────
 function computeChecksum(filePath) {
     const fs = require('fs');
-    if (!fs.existsSync(filePath)) return null;
-    const data = fs.readFileSync(filePath);
+    const safePath = path.normalize(filePath);
+    if (!fs.existsSync(safePath)) return null;
+    const data = fs.readFileSync(safePath);
     return crypto.createHash('sha256').update(data).digest('hex');
 }
 
 function loadChecksums(checksumFile) {
     const fs = require('fs');
-    if (!fs.existsSync(checksumFile)) return {};
-    try { return JSON.parse(fs.readFileSync(checksumFile, 'utf8')); } catch { return {}; }
+    const safeFile = path.normalize(checksumFile);
+    if (!fs.existsSync(safeFile)) return {};
+    try { return JSON.parse(fs.readFileSync(safeFile, 'utf8')); } catch { return {}; }
 }
 
 function saveChecksums(checksumFile, checksums) {
     const fs = require('fs');
-    fs.writeFileSync(checksumFile, JSON.stringify(checksums, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.normalize(checksumFile), JSON.stringify(checksums, null, 2), { mode: 0o600 });
 }
 
 function updateChecksum(checksumFile, filePath) {
