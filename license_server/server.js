@@ -2030,7 +2030,7 @@ app.post('/add', auth, (req, res) => {
 
     if (!mid) { req.session.flash = { type: 'danger', msg: 'Machine ID trống.' }; return res.redirect('/machines'); }
     if (!isValidMachineId(mid)) {
-        req.session.flash = { type: 'danger', msg: 'Machine ID không hợp lệ. MAC phải có dạng 00:0c:29:2f:71:4e|hostname.' };
+        req.session.flash = { type: 'danger', msg: 'Machine ID không hợp lệ. HWID phải là 64 ký tự hex (SHA-256).' };
         return res.redirect('/machines');
     }
     const db = loadDB();

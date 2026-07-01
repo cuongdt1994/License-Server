@@ -71,13 +71,11 @@ function canBootstrapLicenseKey(entry, { sentKey, justRegistered, enabled }) {
 }
 
 function isValidMachineId(mid) {
+    // HWID is a SHA-256 hash: 64 lowercase hex characters.
+    // Built by license_check.cpp GetMachineID() from DMI product_uuid,
+    // board_serial, /etc/machine-id, CPU model, and hostname.
     const text = String(mid || '').trim();
-    const sep = text.indexOf('|');
-    if (sep <= 0 || sep === text.length - 1) return false;
-    const mac = text.slice(0, sep);
-    const host = text.slice(sep + 1).trim();
-    if (!host || host.length > 128) return false;
-    return /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(mac);
+    return /^[0-9a-f]{64}$/.test(text);
 }
 
 function canViewPortalLicense(entry, providedKey) {
