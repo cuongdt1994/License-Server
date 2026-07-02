@@ -25,7 +25,7 @@
   <div class="page-head">
     <div>
       <div class="page-eyebrow">Machine detail</div>
-      <h1 class="page-title"><code><%= mid %></code></h1>
+      <h1 class="page-title"><code title="<%= mid %>"><%= mid.slice(0, 8) %>…<%= mid.slice(-4) %></code></h1>
       <p class="page-sub">
         <span class="tier-badge" style="background:<%= td.bg %>;color:<%= td.color %>"><%= td.label %></span>
         <% if (isOnline) { %><span class="badge badge-success" style="margin-left:6px">🟢 Online</span>

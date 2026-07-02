@@ -184,7 +184,7 @@
             data-sort-note="<%= (row.note || '').toLowerCase() %>" data-sort-added="<%= row.added || '' %>">
           <td style="text-align:center"><input type="checkbox" class="bulk-select row-checkbox" data-mid="<%= row.mid %>"></td>
           <td>
-            <code><%= row.mid %></code>
+            <code title="<%= row.mid %>"><%= row.mid.slice(0, 8) %>…<%= row.mid.slice(-4) %></code>
             <% if (row.auto) { %><span class="badge badge-muted" style="font-size:.65rem;margin-left:3px">Auto</span><% } %>
             <% if (row.license_key) { %>
               <div class="text-xs text-muted mt-2 font-mono" style="display:flex;align-items:center;gap:4px">

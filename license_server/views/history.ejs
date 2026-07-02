@@ -49,7 +49,7 @@
             <% } else if (e.event === 'transfer') { %><span class="badge badge-info">Transfer</span>
             <% } else { %><span class="badge badge-muted"><%= e.event %></span><% } %>
           </td>
-          <td><code><%= e.mid %></code></td>
+          <td><code title="<%= e.mid %>"><%= e.mid.slice(0, 8) %>…<%= e.mid.slice(-4) %></code></td>
           <td class="font-mono text-xs text-muted"><%= e.ip || '—' %></td>
           <td class="text-xs text-muted"><%= e.reason || '—' %></td>
         </tr>

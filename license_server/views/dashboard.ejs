@@ -138,7 +138,7 @@
         %>
         <tr>
           <td>
-            <code><%= r.mid %></code>
+            <code title="<%= r.mid %>"><%= r.mid.slice(0, 8) %>…<%= r.mid.slice(-4) %></code>
             <% if (r.pending_cfg) { %>
               <span class="badge badge-warning" style="font-size:.7rem;margin-left:4px" title="Cấu hình đang chờ đồng bộ (≤5s)">⏳ sync</span>
             <% } %>
